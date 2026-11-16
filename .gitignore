@@ -1,0 +1,48 @@
+# Build and test output
+/build/
+/dist/
+/bin/
+*.exe
+*.dll
+*.so
+*.a
+*.o
+*.test
+*.test.exe
+*.out
+*.prof
+coverage*
+
+# Local credentials and policy. Never commit real controller material.
+.local/
+.env
+.env.*
+!.env.example
+adbkey*
+authorized_keys*
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
+*.jks
+
+# Deployment data and device evidence
+/ops/
+/deployment/
+/receipts/
+/evidence/
+/tools/
+*.apk
+*.log
+*.pid
+*.pcap
+*.pcapng
+*.dump
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*~
