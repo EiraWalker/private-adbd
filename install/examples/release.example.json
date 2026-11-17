@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "apk": "FICTIONAL-review-required.apk",
+  "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "version": 2,
+  "package": "com.termux",
+  "signer_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "debuggable": true,
+  "baselines": [
+    {
+      "version": 1,
+      "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+    }
+  ],
+  "payloads": [],
+  "remove_legacy": [],
+  "source_revision": "FICTIONAL-operator-metadata-not-verified"
+}

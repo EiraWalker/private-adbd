@@ -25,6 +25,7 @@ Remote access still requires a working relay, network path, and ACLs that allow 
 - Optional [shell supervisor](lifecycle/README.md) with bounded automatic child restart.
 - Optional [Termux fork guardian](integrations/termux/README.md) for automatic monitoring, recovery, and conditional startup.
   See [startup prerequisites and limits](#optional-startup-and-automatic-recovery).
+- Optional [host upgrade installer](install/README.md) for already provisioned Termux-fork deployments, with explicit execution, checked payloads, and recovery checkpoints.
 - Explicit device identity with a required `--serial` argument.
 - One or two Android ADB RSA public keys. No network enrollment or pairing service.
 - TLS 1.3 only. Unknown keys and invalid policy files fail closed.
@@ -188,6 +189,13 @@ For detached supervision, see [lifecycle/README.md](lifecycle/README.md).
 Its `service.sh` requires a separately provisioned owner-only `service.serial` containing the exact device identity.
 For guardian recovery and conditional startup, see [Optional startup and automatic recovery](#optional-startup-and-automatic-recovery).
 
+For subsequent matching-fork APK and app-script upgrades, use the optional
+[host installer](install/README.md). Device identity, transport, approved artifacts,
+and maintenance ownership are local inputs, not defaults committed to this repository.
+Planning is offline; device writes require explicit execution and a valid maintenance
+record. It does not perform initial Play-to-fork migration, provision keys, grant
+permissions, configure a relay, or override Stop and safety pauses.
+
 ### 4. Configure your private relay
 
 Forward an authenticated private endpoint to Android `127.0.0.1:27184`.
@@ -286,6 +294,7 @@ internal/transport/   ADB packets, TLS upgrade, and stream multiplexer
 internal/services/    Shell, basic sync, and scrcpy abstract sockets
 lifecycle/            Optional Android shell supervisor and Linux fixture tests
 integrations/termux/  Optional health publisher and existing-fork guardian wrapper
+install/              Optional manifest-driven host upgrade installer and offline tests
 docs/SECURITY.md      Threat model and reporting guidance
 ```
 

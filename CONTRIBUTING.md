@@ -37,6 +37,18 @@ Do not describe a cross-build as a device test.
 Use generated disposable keys and clearly fictional serials, such as `FIXTURE-SERIAL-001`.
 Do not add device integration tests that require personal infrastructure.
 
+The optional host installer uses Python 3.11+ and the standard library. For installer
+changes, also run its portable, fictional-fixture suite from the repository root:
+
+```sh
+python -m unittest discover -s install/tests -v
+python -S install/installer.py --help
+```
+
+Keep device profiles, release inputs, maintenance records, SDK tools, APKs, private
+backups, and execution receipts outside the repository. Offline/model tests do not
+establish Android PackageManager, native TLS, lifecycle, or physical-input acceptance.
+
 ## Safe submissions
 
 Review the complete diff, including new files.

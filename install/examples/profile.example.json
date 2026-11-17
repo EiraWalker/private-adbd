@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "serial": "FICTIONAL-SERIAL-001",
+  "app_uid": 10123,
+  "package": "com.termux",
+  "base": "/data/local/tmp/fictional-private-adbd",
+  "native_port": 5038,
+  "native_home": "/data/data/com.termux/files/home",
+  "publisher": "embedded",
+  "transport": {
+    "kind": "controller",
+    "argv": ["FICTIONAL-fixed-identity-controller", "--wait", "15"]
+  }
+}

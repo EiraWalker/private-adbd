@@ -61,6 +61,12 @@ is the existing daemon binary, not the Termux command.
 
 ### Safe deployment responsibilities
 
+For upgrades of an already provisioned installation, the optional
+[host installer](../../install/README.md) checks local release/profile inputs and
+keeps explicit execution and recovery checkpoints. It does not replace the initial
+provisioning responsibilities below or turn the integration scripts into an APK,
+permission grant, pairing service, or unattended recovery guarantee.
+
 These are deployment instructions, not an installer that runs an application:
 
 1. Verify the intended fork APK's bytes/version/signature and complete its
