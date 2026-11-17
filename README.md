@@ -1,6 +1,6 @@
 # private-adbd
 
-**A loopback-only ADB endpoint for an existing Android shell session.**
+**Private ADB for Android at fixed `127.0.0.1:27184`, with optional supervision and startup integration.**
 
 ![License: MIT](https://img.shields.io/badge/license-MIT-2563eb)
 ![Go: 1.25+](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)
@@ -10,19 +10,28 @@ private-adbd implements a small ADB service set without replacing the system `ad
 It runs with **UID 2000**, requires **SELinux Enforcing**, and binds only to **`127.0.0.1:27184`**.
 An exact public-key allowlist controls access through ADB STLS and TLS 1.3.
 
+Once started, the private service works over Wi-Fi or cellular through an external authenticated tailnet relay.
+The daemon binds to neither network interface. It does not follow the changing native Wireless debugging TLS port.
+Remote access still requires a working relay, network path, and ACLs that allow your controller.
+
 > **Experimental, security-sensitive software.** This project has no independent security audit or broad device-compatibility certification.
 > Authorized clients get Android shell access, not a read-only interface.
 > Review the [security model](#security-model) before use.
 
 ## At a glance
 
+- Fixed **`127.0.0.1:27184`** listener. No LAN or public listener, and no system `adbd` replacement.
+- Wi-Fi and cellular access through an external authenticated relay, independent of the native Wireless debugging connection port.
+- Optional [shell supervisor](lifecycle/README.md) with bounded automatic child restart.
+- Optional [Termux fork guardian](integrations/termux/README.md) for automatic monitoring, recovery, and conditional startup.
+  See [startup prerequisites and limits](#optional-startup-and-automatic-recovery).
 - Explicit device identity with a required `--serial` argument.
 - One or two Android ADB RSA public keys. No network enrollment or pairing service.
 - TLS 1.3 only. Unknown keys and invalid policy files fail closed.
 - Shell v1, raw shell v2, `exec:`, and basic ADB file sync.
 - Forward connections to bounded `scrcpy_*` abstract sockets on Linux.
 - Connection and stream limits, cancellation, and Linux process-group cleanup.
-- Go standard library only. No APK, root helper, controller, or background installer.
+- Daemon core: Go standard library only. No bundled APK, root helper, controller, or background installer.
 
 ## Architecture
 
@@ -38,6 +47,7 @@ flowchart LR
 ```
 
 The private tunnel is an external component. This repository does not configure peer identity, ACLs, forwarding, or VPN ownership.
+The daemon has no built-in VPN. Do not expose it directly to a LAN or the public Internet.
 
 A userspace Tailscale or Headscale-connected relay can forward private traffic to the loopback listener.
 TailSocks does not need to own Android's VPN slot for that userspace forwarding pattern.
@@ -174,10 +184,9 @@ Keep this session open for the foreground example.
 Startup rejects the wrong UID, serial, SELinux context, or allowlist before it opens a listener.
 Startup logs include the device serial. Redact logs before sharing them.
 
-For optional detached supervision and bounded child restart, see
-[lifecycle/README.md](lifecycle/README.md). Its `service.sh` requires a separately
-provisioned owner-only `service.serial` containing the exact device identity.
-It does not provide boot startup or resurrect a killed supervisor.
+For detached supervision, see [lifecycle/README.md](lifecycle/README.md).
+Its `service.sh` requires a separately provisioned owner-only `service.serial` containing the exact device identity.
+For guardian recovery and conditional startup, see [Optional startup and automatic recovery](#optional-startup-and-automatic-recovery).
 
 ### 4. Configure your private relay
 
@@ -188,6 +197,36 @@ Verify the relay's device identity independently.
 The following examples use the fictional name `device.example.invalid`.
 Replace it with your authenticated relay endpoint.
 Do not change the daemon to bind a LAN or public address.
+
+## Optional startup and automatic recovery
+
+These optional layers have different responsibilities:
+
+| Layer | Automatic behavior | Boundary |
+| --- | --- | --- |
+| [Shell supervisor](lifecycle/README.md) | Detaches and restarts an exited daemon child with bounded retries and backoff. | Requires an authorized shell launch. It cannot restart itself after watch loss or Android reboot. |
+| [Termux integration](integrations/termux/README.md) | Publishes shell-service health for the existing fork guardian, which can detect watch loss and request recovery. | Requires an existing debuggable Termux fork with `PrivateAdbService` and `AutostartConfig`. This repository bundles no APK. |
+| Fork startup hooks | App opening, `BOOT_COMPLETED`, or `MY_PACKAGE_REPLACED` can start enabled guardian monitoring. | Requires the first credential unlock and valid enabled configuration. Android and OEM background-start restrictions still apply. |
+
+The guardian monitors an app-private heartbeat and uses bounded recovery attempts with backoff.
+For recovery, it temporarily enables native Wireless debugging, discovers its local TLS endpoint, and calls the installed integration wrapper.
+The wrapper uses an explicitly paired local recovery key to start the shell supervisor and health publisher.
+The guardian then closes its owned native Wireless debugging window.
+This bootstrap does not replace system `adbd` or change the private listener, controller keys, or relay ACLs.
+
+Provision the scripts, matching device identity, and enabled guardian configuration before use.
+Recovery requires usable Wi-Fi, prior explicit local TLS pairing, and `WRITE_SECURE_SETTINGS` permission for the fork.
+Approve the required battery exemption and any OEM autostart/background permissions.
+Ordinary app opening does not override a saved Stop or safety pause. Use the explicit Enable confirmation in the fork after repair.
+
+An already running private service does not need native Wireless debugging for Wi-Fi or cellular access.
+With its shell supervisor alive, bounded child restart does not need a new native TLS bootstrap, including on cellular.
+Guardian bootstrap is different: it needs Wi-Fi and the prerequisites above.
+
+Do not assume cellular-only cold startup or cellular-only recovery after the entire shell process chain disappears.
+These hooks do not guarantee unattended Android reboot recovery or recovery after force-stop.
+Force-stop can also prevent cleanup of the temporary native debugging window.
+Validate startup, recovery, relay availability, and background behavior separately on your device.
 
 ## ADB and scrcpy
 
@@ -229,7 +268,7 @@ It cannot contain commands that deliberately escape the managed process group.
 - No root, `su`, privilege escalation, SELinux changes, or system `adbd` replacement.
 - No PTY, daemon-side reverse forwarding, arbitrary TCP services, or pairing discovery.
 - No full stock-ADB feature parity, compressed sync, or guaranteed install/reboot workflows.
-- No included APK, controller app, relay, deployment automation, or boot service.
+- No bundled APK, controller app, relay, or boot service. Optional startup uses the existing Termux fork described above.
 - Linux cleanup manages the shell process group. Descendants can escape through `setsid` or `setpgid`.
 - Android can terminate shell processes. OEM power management and reboot remove any persistence assumption.
 - A foreground launch does not establish a supervised service. Validate lifecycle behavior on your own device.
@@ -243,6 +282,7 @@ internal/security/    Android key parsing and TLS policy
 internal/transport/   ADB packets, TLS upgrade, and stream multiplexer
 internal/services/    Shell, basic sync, and scrcpy abstract sockets
 lifecycle/            Optional Android shell supervisor and Linux fixture tests
+integrations/termux/  Optional health publisher and existing-fork guardian wrapper
 docs/SECURITY.md      Threat model and reporting guidance
 ```
 
