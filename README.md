@@ -174,8 +174,10 @@ Keep this session open for the foreground example.
 Startup rejects the wrong UID, serial, SELinux context, or allowlist before it opens a listener.
 Startup logs include the device serial. Redact logs before sharing them.
 
-This source release contains no supervisor or `service.sh`.
-This repository does not promise detached survival, automatic restart, or boot startup.
+For optional detached supervision and bounded child restart, see
+[lifecycle/README.md](lifecycle/README.md). Its `service.sh` requires a separately
+provisioned owner-only `service.serial` containing the exact device identity.
+It does not provide boot startup or resurrect a killed supervisor.
 
 ### 4. Configure your private relay
 
@@ -240,6 +242,7 @@ internal/runtimecfg/  Device identity and key-file checks
 internal/security/    Android key parsing and TLS policy
 internal/transport/   ADB packets, TLS upgrade, and stream multiplexer
 internal/services/    Shell, basic sync, and scrcpy abstract sockets
+lifecycle/            Optional Android shell supervisor and Linux fixture tests
 docs/SECURITY.md      Threat model and reporting guidance
 ```
 

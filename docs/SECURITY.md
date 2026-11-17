@@ -84,7 +84,9 @@ These limits reduce selected resource risks. They do not establish denial-of-ser
 
 On Linux, shell cleanup targets the managed process group before it reaps the leader.
 Descendants can escape through `setsid` or `setpgid`.
-There is no boot service, restart supervisor, watchdog, root helper, or persistence guarantee in this source release.
+The optional [shell lifecycle manager](../lifecycle/README.md) can restart the daemon
+with bounded retries and identity checks. It does not resurrect itself or provide a
+boot service, app watchdog, root helper, or persistence guarantee.
 Android and OEM power management can terminate the process.
 
 The daemon does not implement PTYs, reverse forwarding, arbitrary TCP services, or wireless pairing.
