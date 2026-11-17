@@ -349,8 +349,8 @@ elif 'shell' in args:
         (self.root/'actual.serial').write_text('test-serial\n')
         (self.root/'actual.uid').write_text('2000\n')
         (self.root/'remote.code').write_text('0')
-        self.script=self.root/'tablet-daemon'
-        text=(SOURCE/'tablet-daemon').read_text() if (SOURCE/'tablet-daemon').exists() else 'echo missing-wrapper >&2; exit 127\n'
+        self.script=self.root/'private-adbd'
+        text=(SOURCE/'private-adbd').read_text() if (SOURCE/'private-adbd').exists() else 'echo missing-wrapper >&2; exit 127\n'
         text=text.replace('/data/data/com.termux',str(self.app))
         text=text.replace('export PATH="$PREFIX/bin:/system/bin"','export PATH="$PREFIX/bin:/usr/bin:/bin"')
         self.script.write_text(text)

@@ -215,6 +215,9 @@ The guardian then closes its owned native Wireless debugging window.
 This bootstrap does not replace system `adbd` or change the private listener, controller keys, or relay ACLs.
 
 Provision the scripts, matching device identity, and enabled guardian configuration before use.
+The Termux command is `/data/data/com.termux/files/usr/bin/private-adbd`; it
+requires an updated fork APK with that fixed manager path and matching
+`autostart.json.managerPath`. See the integration's installation contract.
 Recovery requires usable Wi-Fi, prior explicit local TLS pairing, and `WRITE_SECURE_SETTINGS` permission for the fork.
 Approve the required battery exemption and any OEM autostart/background permissions.
 Ordinary app opening does not override a saved Stop or safety pause. Use the explicit Enable confirmation in the fork after repair.

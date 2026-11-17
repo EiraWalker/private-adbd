@@ -13,11 +13,11 @@ ADB="$PREFIX/bin/adb"
 STATE="$HOME/.config/tablet-daemon"
 SERVICE=/data/local/tmp/private-adbd/service.sh
 PUBLISHER=/data/local/tmp/private-adbd/health-publisher.sh
-fail() { printf 'tablet-daemon: %s\n' "$*" >&2; exit 2; }
+fail() { printf 'private-adbd: %s\n' "$*" >&2; exit 2; }
 usage() {
- printf '%s\n' 'tablet-daemon start|ensure|status [native TLS connection port]' \
-  'tablet-daemon reconcile <connection port>     # read status; ensure publisher; clear pending' \
-  'tablet-daemon pair <native TLS pairing port>   # enter code locally' \
+ printf '%s\n' 'private-adbd start|ensure|status [native TLS connection port]' \
+  'private-adbd reconcile <connection port>     # read status; ensure publisher; clear pending' \
+  'private-adbd pair <native TLS pairing port>   # enter code locally' \
   'Only 127.0.0.1; no port scanning or automatic pairing.'
 }
 cmd=${1:-start}
@@ -45,7 +45,7 @@ cmp -s "$STATE/device.serial" <(printf '%s\n' "$SERIAL") || fail 'noncanonical s
 [[ -z ${TABLET_DAEMON_EXPECTED_SERIAL:-} || $TABLET_DAEMON_EXPECTED_SERIAL == "$SERIAL" ]] || fail 'app/config identity mismatch'
 for name in session.lock port start.pending; do safe_file "$STATE/$name" 600 || fail 'unsafe wrapper state'; done
 exec 9>>"$STATE/session.lock"
-flock -n 9 || { printf '%s\n' 'tablet-daemon: another command is running' >&2; exit 1; }
+flock -n 9 || { printf '%s\n' 'private-adbd: another command is running' >&2; exit 1; }
 if [[ $cmd == start || $cmd == ensure ]]; then
  [[ ! -e $STATE/start.pending ]] || fail 'previous dispatch unconfirmed; use status/reconcile, never replay start'
 fi
@@ -74,7 +74,7 @@ if [[ ! -f $KEY ]]; then
 fi
 safe_file "$KEY" 600 && [[ -s $KEY ]] || fail 'unsafe generated native key'
 safe_file "$KEY.pub" 600 && [[ -s $KEY.pub ]] || fail 'unsafe generated native public key'
-adb_call 5 -L tcp:localhost:5038 start-server >/dev/null 2>&1 || { printf '%s\n' 'tablet-daemon: local ADB server unavailable' >&2; exit 1; }
+adb_call 5 -L tcp:localhost:5038 start-server >/dev/null 2>&1 || { printf '%s\n' 'private-adbd: local ADB server unavailable' >&2; exit 1; }
 if [[ $cmd == pair ]]; then
  [[ $# == 2 ]] && valid_port "$2" || fail 'pair requires one pairing port'
  printf '%s\n' 'Enter the Android pairing code here, never in chat.'

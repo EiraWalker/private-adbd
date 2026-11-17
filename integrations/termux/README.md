@@ -11,7 +11,7 @@ its own keys and fixed `127.0.0.1:27184` endpoint.
 | File | Owner | Mode |
 | --- | --- | --- |
 | `/data/local/tmp/private-adbd/health-publisher.sh` | shell UID 2000 | 0700 |
-| `/data/data/com.termux/files/usr/bin/tablet-daemon` | existing Termux app UID | 0700 |
+| `/data/data/com.termux/files/usr/bin/private-adbd` | existing Termux app UID | 0700 |
 | `/data/data/com.termux/files/home/.config/tablet-daemon` | Termux app UID | 0700 directory |
 | `device.serial`, `autostart.json` under that directory | Termux app UID | 0600 |
 | `health.json` (created by publisher through run-as) | Termux app UID | 0600 |
@@ -35,14 +35,29 @@ placeholder; it is deliberately not a usable serial):
   "version": 1,
   "enabled": true,
   "expectedSerial": "<deployment serial>",
-  "managerPath": "/data/data/com.termux/files/usr/bin/tablet-daemon",
+  "managerPath": "/data/data/com.termux/files/usr/bin/private-adbd",
   "heartbeatPath": "/data/data/com.termux/files/home/.config/tablet-daemon/health.json"
 }
 ```
 
-The internal name **must remain `tablet-daemon`** because this unmodified APK
-uses that fixed path, including on phones. An interactive `phone` alias may
-point to it; do not change the APK or its managerPath for naming alone.
+The renamed command requires an updated fork APK whose fixed `MANAGER` path is
+`/data/data/com.termux/files/usr/bin/private-adbd`, matching `managerPath` above.
+An older APK hardcoded to the old command cannot use this rename. Deploy the
+matching APK and configuration together; no old-command alias is provided.
+
+The state directory **intentionally remains `.config/tablet-daemon`**. Preserve
+its existing `native-home` keys/pairing, `device.serial`, `autostart.json`,
+`health.json`, `session.lock`, `port` and `start.pending`; do not migrate or
+reset them for this command-only rename. `TABLET_DAEMON_EXPECTED_SERIAL`, the
+configuration/heartbeat formats, `PrivateAdbService`/`AutostartConfig` and the
+`tablet-guardian` command remain unchanged.
+Within `autostart.json`, update only `managerPath` to the new command path;
+retain the existing identity, enabled setting and heartbeat path.
+
+The Termux Bash wrapper and shell-owned daemon ELF are both named `private-adbd`
+but have different paths and interfaces: the wrapper above takes
+`start|ensure|status|reconcile|pair`; `/data/local/tmp/private-adbd/private-adbd`
+is the existing daemon binary, not the Termux command.
 
 ### Safe deployment responsibilities
 
@@ -79,15 +94,15 @@ enter the pairing code only at the local prompt. The pairing port and connection
 port are different. Substitute observed ports for these shell variables:
 
 ```sh
-tablet-daemon pair "$PAIRING_PORT"
-tablet-daemon start "$TLS_CONNECTION_PORT"
-tablet-daemon status "$TLS_CONNECTION_PORT"
+private-adbd pair "$PAIRING_PORT"
+private-adbd start "$TLS_CONNECTION_PORT"
+private-adbd status "$TLS_CONNECTION_PORT"
 # Saved connection port may be reused, but is never scanned or guessed:
-tablet-daemon ensure
+private-adbd ensure
 ```
 
 `start` and `ensure` have the same noninteractive, bounded behavior. The APK
-calls `tablet-daemon start <NSD-observed TLS port>`; no new discovery logic lives
+calls `private-adbd start <NSD-observed TLS port>`; no new discovery logic lives
 here. Only `127.0.0.1` is contacted. Manual ports must come from the device's
 native **TLS** Wireless debugging UI, not a legacy TCP listener. The wrapper
 never enables a listener, sets `adb tcpip`, scans ports, or changes network/key
@@ -128,8 +143,8 @@ After an uncertain result, inspect status, repair separately if needed, and use
 this **explicit operator action**, which does not start/restart the daemon:
 
 ```sh
-tablet-daemon status "$TLS_CONNECTION_PORT"
-tablet-daemon reconcile "$TLS_CONNECTION_PORT"
+private-adbd status "$TLS_CONNECTION_PORT"
+private-adbd reconcile "$TLS_CONNECTION_PORT"
 ```
 
 `reconcile` executes only `service.sh status && health-publisher.sh ensure` and
@@ -190,7 +205,7 @@ wrong-owner fixtures, and isolated Linux-permission-capable scratch storage:
 export MKSH=/absolute/path/to/mksh TOYBOX=/absolute/path/to/toybox
 export INTEGRATION_WORK=/absolute/path/to/isolated-linux-scratch
 export PYTHONDONTWRITEBYTECODE=1
-python3 integrations/termux/tests/test_integration.py
+python3 -m unittest discover -s integrations/termux/tests -v
 ```
 
 The fixtures adapt fixed Android paths, UID/context and clock only inside their
