@@ -1,0 +1,116 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# Optional native-TLS bootstrap for the existing fork guardian, not daemon auth.
+set -u
+umask 077
+export HOME=/data/data/com.termux/files/home
+export PREFIX=/data/data/com.termux/files/usr
+export PATH="$PREFIX/bin:/system/bin"
+export LC_ALL=C
+unset ADB_SERVER_SOCKET ANDROID_ADB_SERVER_PORT ADB_VENDOR_KEYS ENV BASH_ENV CDPATH
+unset ANDROID_USER_HOME ANDROID_SDK_HOME ANDROID_SERIAL ADB_TRACE ADB_EMU
+unset LD_PRELOAD LD_LIBRARY_PATH
+ADB="$PREFIX/bin/adb"
+STATE="$HOME/.config/tablet-daemon"
+SERVICE=/data/local/tmp/private-adbd/service.sh
+PUBLISHER=/data/local/tmp/private-adbd/health-publisher.sh
+fail() { printf 'tablet-daemon: %s\n' "$*" >&2; exit 2; }
+usage() {
+ printf '%s\n' 'tablet-daemon start|ensure|status [native TLS connection port]' \
+  'tablet-daemon reconcile <connection port>     # read status; ensure publisher; clear pending' \
+  'tablet-daemon pair <native TLS pairing port>   # enter code locally' \
+  'Only 127.0.0.1; no port scanning or automatic pairing.'
+}
+cmd=${1:-start}
+case "$cmd" in help|-h|--help) usage; exit 0 ;; start|ensure|status|reconcile|pair) ;; *) usage >&2; exit 2 ;; esac
+(( $# <= 2 )) || fail 'too many arguments'
+valid_port() { [[ $1 =~ ^[0-9]{1,5}$ ]] && (( 10#$1 > 0 && 10#$1 < 65536 )); }
+safe_file() {
+ [[ ! -L $1 ]] || return 1
+ [[ ! -e $1 ]] || { [[ -f $1 ]] && [[ $(stat -c '%u:%a:%h' "$1") == "$app_uid:$2:1" ]]; }
+}
+[[ -x $ADB ]] || fail 'install Termux android-tools first'
+app_uid=$(id -u) || fail 'app UID unavailable'
+cd /data/data/com.termux || fail 'app root unavailable'
+app_root=$(pwd -P) || exit 2
+for part in files files/home files/home/.config files/home/.config/tablet-daemon; do
+ [[ ! -L $part && -d $part ]] && [[ $(stat -c %u "$part") == "$app_uid" ]] || fail 'unsafe app directory'
+done
+[[ $(cd "$STATE" && pwd -P) == "$app_root/files/home/.config/tablet-daemon" ]] || fail 'symlink ancestor'
+[[ $(stat -c '%u:%a' "$STATE") == "$app_uid:700" ]] || fail 'config directory must be app-owned 0700'
+safe_file "$STATE/device.serial" 600 && [[ -f $STATE/device.serial ]] || fail 'missing or unsafe device.serial'
+IFS= read -r SERIAL <"$STATE/device.serial" || fail 'serial must be newline-terminated'
+[[ $SERIAL =~ ^[A-Za-z0-9._-]{1,128}$ ]] || fail 'invalid serial data'
+# read discards NUL; validate the complete file, including a suffix after LF.
+cmp -s "$STATE/device.serial" <(printf '%s\n' "$SERIAL") || fail 'noncanonical serial bytes'
+[[ -z ${TABLET_DAEMON_EXPECTED_SERIAL:-} || $TABLET_DAEMON_EXPECTED_SERIAL == "$SERIAL" ]] || fail 'app/config identity mismatch'
+for name in session.lock port start.pending; do safe_file "$STATE/$name" 600 || fail 'unsafe wrapper state'; done
+exec 9>>"$STATE/session.lock"
+flock -n 9 || { printf '%s\n' 'tablet-daemon: another command is running' >&2; exit 1; }
+if [[ $cmd == start || $cmd == ensure ]]; then
+ [[ ! -e $STATE/start.pending ]] || fail 'previous dispatch unconfirmed; use status/reconcile, never replay start'
+fi
+# This dedicated local server has its own native-only key and default key HOME.
+# Never copy this public key into private-adbd/authorized_keys.
+NATIVE_HOME="$STATE/native-home"
+for dir in "$NATIVE_HOME" "$NATIVE_HOME/.android"; do
+ [[ ! -L $dir ]] || fail 'unsafe native key directory'
+ [[ -e $dir ]] || mkdir "$dir" || fail 'cannot provision native key directory'
+ [[ -d $dir && $(stat -c '%u:%a' "$dir") == "$app_uid:700" ]] || fail 'unsafe native key directory'
+done
+KEY="$NATIVE_HOME/.android/adbkey"
+for file in "$KEY" "$KEY.pub"; do safe_file "$file" 600 || fail 'unsafe native key'; done
+export ADB_VENDOR_KEYS="$KEY"
+export ADB_MDNS_AUTO_CONNECT=0
+export ADB_LOCAL_TRANSPORT_MAX_PORT=0
+# Explicitly close the wrapper lock for EVERY adb child, including server spawn.
+adb_call() {
+ local seconds=$1; shift
+ HOME="$NATIVE_HOME" timeout "$seconds" "$ADB" "$@" 9>&-
+}
+adb_local() { local seconds=$1; shift; adb_call "$seconds" -H localhost -P 5038 "$@"; }
+if [[ ! -f $KEY ]]; then
+ [[ ! -e $KEY.pub ]] || fail 'orphan native public key; repair manually'
+ adb_call 5 keygen "$KEY" >/dev/null 2>&1 || fail 'native key generation failed'
+fi
+safe_file "$KEY" 600 && [[ -s $KEY ]] || fail 'unsafe generated native key'
+safe_file "$KEY.pub" 600 && [[ -s $KEY.pub ]] || fail 'unsafe generated native public key'
+adb_call 5 -L tcp:localhost:5038 start-server >/dev/null 2>&1 || { printf '%s\n' 'tablet-daemon: local ADB server unavailable' >&2; exit 1; }
+if [[ $cmd == pair ]]; then
+ [[ $# == 2 ]] && valid_port "$2" || fail 'pair requires one pairing port'
+ printf '%s\n' 'Enter the Android pairing code here, never in chat.'
+ adb_local 60 pair "127.0.0.1:$2"; exit $?
+fi
+port=${2:-}
+if [[ -z $port && -f $STATE/port ]]; then
+ IFS= read -r port <"$STATE/port" || fail 'bad saved port'
+fi
+valid_port "$port" || fail 'provide the observed native TLS connection port'
+endpoint="127.0.0.1:$port"
+adb_local 5 connect "$endpoint" >/dev/null 2>&1 || exit 1
+state=$(adb_local 3 -s "$endpoint" get-state 2>/dev/null) || exit 1
+[[ $state == device ]] || exit 1
+actual=$(adb_local 5 -s "$endpoint" shell -T getprop ro.serialno 2>/dev/null) || exit 1
+actual=${actual%$'\r'}
+[[ $actual == "$SERIAL" ]] || fail 'wrong device; no control command sent'
+uid=$(adb_local 5 -s "$endpoint" shell -T id -u 2>/dev/null) || exit 1
+uid=${uid%$'\r'}
+[[ $uid == 2000 ]] || fail 'native channel is not shell UID 2000'
+printf '%s\n' "$port" >"$STATE/port" || fail 'cannot save observed port'
+if [[ $cmd == status ]]; then
+ adb_local 8 -s "$endpoint" shell -T "/system/bin/sh $SERVICE status"; exit $?
+fi
+if [[ $cmd == reconcile ]]; then
+ # Explicit operator action: no daemon start, only exact status + publisher.
+ adb_local 12 -s "$endpoint" shell -T "/system/bin/sh $SERVICE status && /system/bin/sh $PUBLISHER ensure" || fail 'reconciliation unconfirmed; pending retained'
+ safe_file "$STATE/start.pending" 600 || fail 'unsafe pending state'
+ rm -f "$STATE/start.pending" || fail 'cannot clear pending state'
+ exit 0
+fi
+# EXACTLY ONE mutating dispatch. Persist a fail-closed latch BEFORE sending it,
+# including when the app kills this wrapper before a result can be returned.
+(set -C; printf '%s\n' unconfirmed >"$STATE/start.pending") || fail 'cannot reserve start dispatch'
+adb_local 30 -s "$endpoint" shell -T "/system/bin/sh $SERVICE start && /system/bin/sh $PUBLISHER ensure"
+result=$?
+[[ $result == 0 ]] || fail 'start/publication unconfirmed; inspect status before retrying'
+safe_file "$STATE/start.pending" 600 || fail 'unsafe pending state'
+rm -f "$STATE/start.pending" || fail 'cannot clear confirmed dispatch'
