@@ -265,7 +265,11 @@ class CoreTransport:
         need(len(r.stdout) <= 131072 and len(r.stderr) <= 131072, 'bounded ADB response')
         need(r.returncode == 0, 'ADB operation failed; inspect receipt and use verify')
         if expected is not None:
-            need(r.stdout == expected, 'exact ADB postcondition response missing')
+            # Compare only exact text representations; never normalize returned bytes.
+            need(r.stdout == expected or
+                 (expected.endswith(b'\n') and b'\r' not in expected and
+                  r.stdout == expected.replace(b'\n', b'\r\n')),
+                 'exact ADB postcondition response missing')
         return r.stdout
 
     def shell(self, label, body, mutate=False, expected=None, selector=None):
@@ -277,8 +281,8 @@ class CoreTransport:
 
     def identity(self, selector=None):
         raw = self.call('identity', ['shell', '-T', identity_script()], selector=selector)
-        # Do not strip/fix identity tokens. Raw -T must return canonical LF fields.
-        parts = raw.split(b'\n')
+        # Do not strip/fix tokens; accept only consistent LF or CRLF field framing.
+        parts = raw.split(b'\r\n' if raw.endswith(b'\r\n') else b'\n')
         need(len(parts) == 6 and parts[-1] == b'', 'identity framing')
         need(parts[:4] == [b'2000', b'u:r:shell:s0', b'Enforcing', self.inputs.p['serial'].encode()],
              'UID/context/Enforcing/independent serial identity')

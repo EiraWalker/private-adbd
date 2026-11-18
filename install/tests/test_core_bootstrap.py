@@ -12,6 +12,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -131,6 +133,132 @@ class LocalPlanTests(unittest.TestCase):
         self.assertFalse(obj['ready'])
         self.assertEqual(obj['supported_abis'], ['arm64-v8a'])
         self.assertNotIn('app_uid', obj)
+
+
+class TransportTextFramingTests(unittest.TestCase):
+    def setUp(self):
+        self.core = load_core()
+        self.serial = b'FIXTURE-SERIAL-001'
+        self.fields = [b'2000', b'u:r:shell:s0', b'Enforcing', self.serial, b'arm64-v8a']
+        inputs = SimpleNamespace(
+            p={'serial': self.serial.decode(),
+               'transport': {'argv': [sys.executable], 'serial': 'FIXTURE-TRANSPORT-ONLY'}},
+            artifacts={'arm64-v8a': b'fictional-pinned-artifact'})
+        self.state = {'events': []}
+        self.remote = self.core.CoreTransport(inputs, mock.Mock(), self.state)
+        self.raw = b''
+        real_run = subprocess.run
+
+        def fixture_run(args, **kwargs):
+            # Host-only adapter: real Python child, no ADB/device/socket access.
+            return real_run([sys.executable, '-B', '-S', '-c',
+                             'import sys; sys.stdout.buffer.write('+repr(self.raw)+')'], **kwargs)
+
+        self.runner = self.enterContext(mock.patch.object(self.core.subprocess, 'run',
+                                                          side_effect=fixture_run))
+
+    def test_identity_accepts_exact_lf_or_crlf_fields(self):
+        for newline in (b'\n', b'\r\n'):
+            with self.subTest(newline=newline):
+                self.raw = newline.join(self.fields)+newline
+                self.assertEqual(self.remote.identity(), 'arm64-v8a')
+                self.runner.assert_called_with(
+                    [sys.executable, '-s', 'FIXTURE-TRANSPORT-ONLY', 'shell', '-T',
+                     self.core.identity_script()], capture_output=True, timeout=150, shell=False)
+                event = self.state['events'][-1]
+                self.assertFalse(event['mutation'])
+                self.assertEqual(event['stdout_bytes'], len(self.raw))
+                self.assertEqual(event['stdout_sha256'], self.core.sha(self.raw))
+
+    def test_identity_security_tokens_are_not_repaired_for_either_framing(self):
+        invalid = ((0, b'0'), (0, b'2001'), (1, b'u:r:untrusted_app:s0'),
+                   (2, b'Permissive'), (3, b'FIXTURE-OTHER-PHONE'),
+                   (4, b'x86_64'), (4, b'mips64-fixture'), (4, b'\xff'))
+        for newline in (b'\n', b'\r\n'):
+            for index, value in invalid:
+                with self.subTest(newline=newline, index=index, value=value):
+                    fields = self.fields.copy()
+                    fields[index] = value
+                    self.raw = newline.join(fields)+newline
+                    with self.assertRaises(self.core.Refusal):
+                        self.remote.identity()
+                    self.assertFalse(self.state['events'][-1]['mutation'])
+
+    def test_identity_rejects_noncanonical_framing_and_token_whitespace(self):
+        lf = b'\n'.join(self.fields)+b'\n'
+        crlf = b'\r\n'.join(self.fields)+b'\r\n'
+        invalid = [lf[:-1], crlf[:-2], b'\r'.join(self.fields)+b'\r',
+                   b'noise\n'+lf, b'noise\r\n'+crlf,
+                   lf+b'extra\n', crlf+b'extra\r\n', lf+b'\n', crlf+b'\r\n']
+        for index in range(len(self.fields)):
+            # One opposite separator (including the final one) is never accepted.
+            parts = [field+b'\n' for field in self.fields]
+            parts[index] = self.fields[index]+b'\r\n'
+            invalid.append(b''.join(parts))
+            parts = [field+b'\r\n' for field in self.fields]
+            parts[index] = self.fields[index]+b'\n'
+            invalid.append(b''.join(parts))
+            for newline in (b'\n', b'\r\n'):
+                for value in (b' '+self.fields[index], self.fields[index]+b' ',
+                              self.fields[index]+b'\t', self.fields[index]+b'\r',
+                              self.fields[index]+b'\r\nnoise', self.fields[index]+b'\x00'):
+                    fields = self.fields.copy()
+                    fields[index] = value
+                    invalid.append(newline.join(fields)+newline)
+        for raw in invalid:
+            with self.subTest(raw=raw):
+                self.raw = raw
+                with self.assertRaises(self.core.Refusal):
+                    self.remote.identity()
+
+    def test_postcondition_accepts_exact_lf_or_crlf_without_changing_bytes(self):
+        for expected in (b'FRESH\n', b'FRESH\nSEALED\n'):
+            for raw in (expected, expected.replace(b'\n', b'\r\n')):
+                with self.subTest(expected=expected, raw=raw):
+                    self.raw = raw
+                    self.assertEqual(self.remote.call('fixture-postcondition', ['fixture-only'],
+                                                      expected=expected), raw)
+                    self.assertEqual(self.state['events'][-1]['stdout_sha256'], self.core.sha(raw))
+                    self.assertEqual(self.state['events'][-1]['stdout_bytes'], len(raw))
+                    self.runner.assert_called_with(
+                        [sys.executable, '-s', 'FIXTURE-TRANSPORT-ONLY', 'fixture-only'],
+                        capture_output=True, timeout=150, shell=False)
+
+    def test_postcondition_rejects_noisy_altered_or_mixed_sentinels(self):
+        cases = ((b'FRESH\n', (b'fresh\n', b'FRESH', b'FRESH\r', b' FRESH\n',
+                              b'FRESH \r\n', b'FRESH\r\r\n', b'FRESH\n\n',
+                              b'FRESH\r\n\r\n', b'noise\nFRESH\n', b'FRESH\nnoise\n',
+                              b'noise\r\nFRESH\r\n', b'FRESH\r\nnoise\r\n',
+                              b'FRESH\x00\n', b'FRESH\n\r\n')),
+                 (b'FRESH\nSEALED\n', (b'FRESH\nSEALED\r\n', b'FRESH\r\nSEALED\n',
+                                      b'FRESH\rSEALED\r', b'FRESH\r\nSEALED\r\r\n')))
+        for expected, invalid in cases:
+            for raw in invalid:
+                with self.subTest(expected=expected, raw=raw):
+                    self.raw = raw
+                    with self.assertRaisesRegex(self.core.Refusal, 'exact ADB postcondition'):
+                        self.remote.call('fixture-postcondition', ['fixture-only'], expected=expected)
+
+    def test_postcondition_does_not_expand_noncanonical_expectations(self):
+        for expected, altered in ((b'', b'\r\n'), (b'FRESH', b'FRESH\r\n'),
+                                  (b'FRESH\r\n', b'FRESH\r\r\n'),
+                                  (b'FRESH\r\nSEALED\n', b'FRESH\r\nSEALED\r\n')):
+            with self.subTest(expected=expected):
+                self.raw = expected
+                self.assertEqual(self.remote.call('fixture-postcondition', ['fixture-only'],
+                                                  expected=expected), expected)
+                self.raw = altered
+                with self.assertRaises(self.core.Refusal):
+                    self.remote.call('fixture-postcondition', ['fixture-only'], expected=expected)
+
+    def test_call_without_expected_preserves_binary_bytes(self):
+        for raw in (b'', b'\x00\xff\n\r\n\r\x00', b'FRESH\r\n',
+                    b'\x7fELF\x00\r\n\x00binary\r\n\n\rpayload'):
+            with self.subTest(raw=raw):
+                self.raw = raw
+                self.assertEqual(self.remote.call('fixture-binary', ['fixture-only']), raw)
+                self.assertEqual(self.state['events'][-1]['stdout_sha256'], self.core.sha(raw))
+                self.assertEqual(self.state['events'][-1]['stdout_bytes'], len(raw))
 
 
 # The executable fixture is a separate Python subprocess, not a fake Remote.
