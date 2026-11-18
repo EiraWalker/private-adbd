@@ -5,6 +5,9 @@ official `adb.exe`. The target is an Android device. Linux-desktop installer
 support is outside scope; all Android-side security checks below still apply.
 No Termux APK upgrade is needed for this core-only installation path.
 
+See [ACCEPTANCE.md](ACCEPTANCE.md) for the bounded Windows and physical Android
+acceptance results. One accepted device does not certify every Android/OEM/ABI.
+
 `core_bootstrap.py` installs the daemon and the reviewed shell supervisor through
 **one already authorized, explicitly selected official ADB transport**. It needs no
 Termux, APK, root, wireless-debugging changes, permission grants, VPN or relay.
@@ -89,7 +92,7 @@ host environment, registers a key, restarts the server or runs `kill-server`.
 
 ## Plan and authorize
 
-```sh
+```powershell
 python -S install/core_bootstrap.py plan --profile C:/private/profile.json --bundle C:/private/bundle.json
 python -S install/core_bootstrap.py --help
 ```
@@ -123,7 +126,7 @@ binding before any device access and again at deployment transition boundaries.
 Keep it valid for the entire operation. Owner handoff must cover the target shell
 namespace: do not run other publishers, lifecycle controls or same-UID writers.
 
-```sh
+```powershell
 python -S install/core_bootstrap.py apply --execute --profile C:/private/profile.json --bundle C:/private/bundle.json --maintenance C:/private/handoff.json --output C:/private/new-core-receipt
 ```
 
@@ -183,10 +186,8 @@ store exit status, output lengths and hashes, not raw command output. Unknown
 push/publication/start outcomes are **never automatically replayed**. No rollback,
 key rotation, service kill, stage scavenger or overwrite path exists.
 
-```sh
-python -S install/core_bootstrap.py verify --execute \
-  --profile /private/profile.json --bundle /private/bundle.json \
-  --maintenance /private/current-handoff.json --output /private/existing-core-receipt
+```powershell
+python -S install/core_bootstrap.py verify --execute --profile C:/private/profile.json --bundle C:/private/bundle.json --maintenance C:/private/current-handoff.json --output C:/private/existing-core-receipt
 ```
 
 Verify requires the original private receipt and bound input bytes. It reconstructs
@@ -204,7 +205,7 @@ Do not rerun apply with a new output directory as an uncertainty workaround.
 
 ## Host verification is not device acceptance
 
-```sh
+```powershell
 python -m unittest discover -s install/tests -p test_core_bootstrap.py -v
 python -S install/core_bootstrap.py --help
 ```
