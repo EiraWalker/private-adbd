@@ -7,7 +7,7 @@ import re
 from common import Refusal, need, sha
 from installer import json_bytes, validate_maintenance
 from private_output import no_links
-from android import validate_native_transition
+from android import validate_native_transition, validate_native_launch
 
 
 def same_json_value(left, right):
@@ -73,12 +73,15 @@ class Engine:
         need(pkg['version']==self.i.r['version'] and pkg['sha256']==self.i.r['sha256'],'installed APK target readback')
         return pkg
 
-    def preserved(self,after,allow_missing=False):
+    def preserved(self,after,allow_missing=False,expected_native=None):
         before=self.cp['before']
+        if 'native_launch' in before:
+            validate_native_launch(before['native_launch'],self.i.p['app_uid'],before['native']['context'])
+            need(same_json_value(before['native_launch'],after.get('native_launch')), 'native launch identity changed')
         for name in ('control','pids','shell_files','wrapper_state','key_metadata_sha256'):
             need(same_json_value(before[name],after[name]),'runtime invariant changed')
         native=after['native']
-        expected=self.cp.get('native_after') or before['native']
+        expected=expected_native or self.cp.get('native_after') or before['native']
         if native is None:
             need(allow_missing and after['listeners']==[x for x in before['listeners'] if x!=before['native']['listener']], 'unexpected missing native server/listeners')
         else:
@@ -94,11 +97,19 @@ class Engine:
         after=self.r.snapshot(allow_missing_native=self.cp['apk_confirmed'])
         self.preserved(after,self.cp['apk_confirmed'])
         self.files_progress()
+        self.late_gates()
+        return after
+
+    def late_gates(self):
+        if 'native_launch' in self.cp['before']:
+            launch=self.r.native_launch()
+            need(same_json_value(launch,self.cp['before']['native_launch']), 'late native launch identity changed')
+        # Launch observation is another potentially slow remote round trip.
+        # Keep Stop/lease/boot freshness after it, not before it.
         late=self.r.late_control()
         expected={k:self.cp['before']['control'][k] for k in ('flags','lease_sha256','boot')}
         need(late==expected,'late Stop/lease/boot gate changed')
         self.auth.check()
-        return after
 
     def mutate(self,name,action,confirm):
         if name in self.cp['done']:return
@@ -156,6 +167,7 @@ class Engine:
             need(time.monotonic()<deadline,'heartbeat did not advance')
             time.sleep(1)
             after=self.r.snapshot();self.preserved(after)
+        self.late_gates()
         if save:
             self.cp['phase']='postcheck';self.save()
 
@@ -199,13 +211,11 @@ class Engine:
         if current['native'] is None:
             def confirm_native():
                 after=self.r.snapshot()
-                need(after['native']!=self.cp['before']['native'],'native rebuild must prove a replacement identity')
-                validate_native_transition(self.cp['before']['native'],after['native'])
-                self.cp['native_after']=after['native'];self.preserved(after)
+                self.confirm_native(after)
                 return True
             self.mutate('native-start',self.r.start_native,confirm_native)
         elif 'native-start' not in self.cp['done']:
-            self.cp['done'].append('native-start');self.save()
+            self.cp['phase']='native-start';self.cp['done'].append('native-start');self.save()
         self.postcheck()
         for item in self.i.r['remove_legacy']:
             self.mutate('legacy-remove',lambda item=item:self.r.remove_legacy(item),lambda item=item:self.r.file_state(item['path']) is None)
@@ -216,6 +226,19 @@ class Engine:
         self.out.write('receipt.json',{'schema':1,'result':'upgraded','bindings':self.i.bindings,
                                      'source_metadata_verified':False,'native_window_validation':'not-run'})
         return {'result':'upgraded','device_calls':self.r.calls,'native_window_validation':'not-run'}
+
+    def confirm_native(self,after):
+        need(self.cp['apk_confirmed'] and 'install' in self.cp['done'] and
+             self.cp['intent']=='native-start' and self.cp['phase']=='native-start',
+             'native launch checkpoint phase')
+        self.auth.check();self.i.unchanged();self.target_package();self.files_progress()
+        need(after['native'] is not None and after['native']!=self.cp['before']['native'],
+             'native rebuild must prove a replacement identity')
+        validate_native_transition(self.cp['before']['native'],after['native'],
+                                   self.cp['before'].get('native_launch'))
+        self.preserved(after,expected_native=after['native'])
+        self.late_gates()
+        self.cp['native_after']=after['native']
 
     def load(self,checkpoint_hash):
         from installer import digest,fields
@@ -236,9 +259,16 @@ class Engine:
              (cp['intent'] is None or cp['phase']==cp['intent']),'checkpoint phase')
         need(cp['phase']!='complete' or (done==order and cp['intent'] is None),'incomplete complete checkpoint')
         need(type(cp['apk_confirmed']) is bool and (not cp['apk_confirmed'] or 'install' in done), 'checkpoint APK flag')
-        fields(cp['before'],('control','pids','shell_files','wrapper_state','key_metadata_sha256','listeners','native','health_uptime'))
+        fields(cp['before'],('control','pids','shell_files','wrapper_state','key_metadata_sha256','listeners','native','health_uptime'),('native_launch',))
         fields(cp['baseline_package'],('uid','version','sha256','path'))
         need(type(cp['before']['native']) is dict and cp['baseline_package']['uid']==self.i.p['app_uid'],'checkpoint baseline identity')
+        if 'native_launch' in cp['before']:
+            validate_native_launch(cp['before']['native_launch'],self.i.p['app_uid'],cp['before']['native'].get('context'))
+            need(cp['before']['native'].get('uid')==self.i.p['app_uid'],'checkpoint native UID')
+            if cp['intent'] is None:
+                need(cp['phase']==(done[-1] if done else 'preflight') or
+                     (cp['phase']=='postcheck' and 'native-start' in done) or
+                     cp['phase']=='complete','checkpoint launch phase progress')
         need((cp['baseline_package']['version'],cp['baseline_package']['sha256']) in
              [(b['version'],b['sha256']) for b in self.i.r['baselines']], 'checkpoint baseline APK')
         expected_paths={p['path'] for p in self.i.r['payloads']}|{p['path'] for p in self.i.r['remove_legacy']}
@@ -260,7 +290,7 @@ class Engine:
         if cp['native_after'] is not None:
             need('native-start' in done,'checkpoint native transition phase')
             need(cp['native_after']!=cp['before']['native'],'checkpoint native rebuild identity')
-            validate_native_transition(cp['before']['native'],cp['native_after'])
+            validate_native_transition(cp['before']['native'],cp['native_after'],cp['before'].get('native_launch'))
 
     def reconcile(self):
         intent=self.cp['intent'];token=self.cp['token']
@@ -280,8 +310,7 @@ class Engine:
         elif intent=='native-start':
             after=self.r.snapshot(allow_missing_native=True)
             need(after['native'] is not None and after['native']!=self.cp['before']['native'],'uncertain native start; inspect only, no second start')
-            validate_native_transition(self.cp['before']['native'],after['native'])
-            self.cp['native_after']=after['native'];self.preserved(after)
+            self.confirm_native(after)
         else:
             need(checks[intent](),'uncertain operation; inspect only, no replay')
         self.cp['done'].append(intent);self.cp['intent']=None

@@ -43,12 +43,31 @@ def validate_control(prefs,lease,health,clock,pending):
         raise Refusal('heartbeat schema') from None
     return {'flags':{k:flags[k] for k in ('userStopped','safetyPaused')},
             'lease_sha256':sha(lease),'boot':clock[0]}
-def validate_native_transition(before,after):
+def validate_native_launch(launch,uid,context=None):
+    need(type(launch) is dict and set(launch)=={'uid','context'} and
+         type(launch['uid']) is int and launch['uid']==uid and
+         isinstance(launch['context'],str) and
+         re.fullmatch(r'u:r:runas_app:s0(?::c[0-9]+(?:,c[0-9]+)*)?',launch['context']),
+         'native launch identity')
+    if context is not None:
+        need(isinstance(context,str) and
+             (re.fullmatch(r'u:r:untrusted_app(?:_[0-9]+)?:s0(?::c[0-9]+(?:,c[0-9]+)*)?',context) or
+              context==launch['context']) and
+             context.split(':',3)[3]==launch['context'].split(':',3)[3], 'native launch MCS/context')
+
+
+def validate_native_transition(before,after,launch=None):
     need(type(before) is dict and type(after) is dict and set(before)==set(after), 'native transition schema')
     if before==after: return
     need(before['pid']!=after['pid'] and after['starttime']>before['starttime'], 'native PID/starttime transition')
-    need({k:v for k,v in before.items() if k not in ('pid','starttime')} ==
-         {k:v for k,v in after.items() if k not in ('pid','starttime')}, 'native server replacement identity')
+    ignored=('pid','starttime')
+    if before['context']!=after['context']:
+        need(launch is not None,'native context change requires checkpoint launch proof')
+        validate_native_launch(launch,before['uid'],before['context'])
+        need(after['context']==launch['context'], 'native context outside captured launch')
+        ignored+=('context',)
+    need({k:v for k,v in before.items() if k not in ignored} ==
+         {k:v for k,v in after.items() if k not in ignored}, 'native server replacement identity')
 
 
 def validate_process(name,record,boot,proc,p,shell_exe):
@@ -87,7 +106,12 @@ def checked_ancestors(path, anchor, uid):
             lines.append('[ "$(stat -c %u '+q(s)+')" = '+str(uid)+' ] || exit 70')
             # mksh does not assume octal from a leading zero. Match permission
             # digits directly so both mksh and POSIX sh reject group/other writes.
-            lines.append('mode=$(stat -c %a '+q(s)+'); case "$mode" in '
+            # Only these two Android-managed directories may be 0771, and only
+            # with the expected app UID as both owner and group. No path override.
+            managed=(anchor==APP and s in (APP+'/files',APP+'/shared_prefs'))
+            exception=('771) [ "$(stat -c %g '+q(s)+')" = '+str(uid)+' ] || exit 70 ;; '
+                       if managed else '')
+            lines.append('mode=$(stat -c %a '+q(s)+'); case "$mode" in '+exception+
                          '[0-7][0145][0145]) : ;; *) exit 70 ;; esac')
     return '\n'.join(lines)
 
@@ -263,8 +287,10 @@ class AndroidRemote:
         uid=re.findall(rb'^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$',status,re.M)
         need(len(uid)==1,'process UID fields')
         exe=(self.t.app if app else self.t.shell)('readlink '+q(root+'exe'),'process').strip()
+        # Authorized shell can observe the kernel label on OEMs where run-as
+        # cannot. Keep every other app process observation in the app domain.
         return {'starttime':start,'exe':exe,'cmd':self.read(root+'cmdline',app),
-                'uid':list(map(int,uid[0])),'context':self.read(root+'attr/current',app).strip(b'\x00\r\n')}
+                'uid':list(map(int,uid[0])),'context':self.read(root+'attr/current',False).strip(b'\x00\r\n')}
 
     def listeners(self):
         raw=self.t.shell('ss -H -lnt','listeners').decode().splitlines()
@@ -279,7 +305,19 @@ class AndroidRemote:
              'non-loopback scoped listener')
         return sorted(scoped)
 
-    def native(self,listeners,allow_missing=False):
+    def native_launch(self):
+        # Fixed independent observations, not a profile label or an inferred domain.
+        raw=self.t.shell('set -eu; run-as com.termux id -u; run-as com.termux id -Z','process')
+        try: lines=raw.decode('ascii').splitlines()
+        except UnicodeError: raise Refusal('native launch encoding') from None
+        need(len(lines)==2 and lines[0]==str(self.p['app_uid']), 'native launch UID/context')
+        launch={'uid':self.p['app_uid'],'context':lines[1]}
+        validate_native_launch(launch,self.p['app_uid'])
+        return launch
+
+    def native(self,listeners,allow_missing=False,launch=None):
+        if launch is None:launch=self.native_launch()
+        validate_native_launch(launch,self.p['app_uid'])
         ids=self.t.shell('pidof adb || true','process').decode().split()
         need(all(x.isdigit() and int(x)>1 for x in ids) and len(ids)==len(set(ids)), 'native PID list')
         servers=[]
@@ -296,7 +334,7 @@ class AndroidRemote:
             inode=self.t.app('stat -Lc \'%d:%i\' /proc/'+pid+'/exe; stat -c \'%d:%i\' '+BIN+'adb','process').decode().splitlines()
             need(len(inode)==2 and inode[0]==inode[1] and re.fullmatch(r'\d+:\d+',inode[0]),'native executable inode')
             context=proc['context'].decode()
-            need(re.fullmatch(r'u:r:untrusted_app(?:_[0-9]+)?:s0(?::c[0-9]+(?:,c[0-9]+)*)?',context),'native app context')
+            validate_native_launch(launch,self.p['app_uid'],context)
             servers.append({'pid':int(pid),'starttime':int(proc['starttime']),'exe':BIN+'adb',
                             'argv_sha256':sha(proc['cmd']),'inode':inode[0],'uid':self.p['app_uid'],
                             'context':context,'listener':'127.0.0.1:'+str(self.p['native_port'])})
@@ -370,9 +408,11 @@ class AndroidRemote:
         need(directory==['700',str(self.p['app_uid']),str(self.p['app_uid'])],'STATE directory permissions')
         self.t.app(BIN+'flock -n 9 9<'+STATE+'session.lock','lock-probe')
         listeners=self.listeners()
+        launch=self.native_launch()
         return {'control':control,'pids':pids,'shell_files':inv,'wrapper_state':state,
                 'key_metadata_sha256':self.key_metadata(),'listeners':listeners,
-                'native':self.native(listeners,allow_missing_native),'health_uptime':health['uptime_ms']}
+                'native':self.native(listeners,allow_missing_native,launch),'native_launch':launch,
+                'health_uptime':health['uptime_ms']}
 
     def backup_installed(self,pkg,name):
         need(name in ('baseline.apk','current.apk'),'APK backup filename')

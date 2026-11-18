@@ -71,6 +71,8 @@ class SnapshotWire(WireModel):
             mode=b'600' if 'authorized_keys' in code or 'service.serial' in code else b'700'
             return mode+b' 2000 2000 1 1\n'+b'0'*64+b'  FICTIONAL-file\n'
         if label=='process':
+            if code=='set -eu; run-as com.termux id -u; run-as com.termux id -Z':
+                return b'10123\nu:r:runas_app:s0:c1,c2\n'
             if code=='pidof adb || true':return b'201\n'
             if code=='readlink -f /system/bin/sh':return b'/system/bin/mksh\n'
             pid=re.search(r'/proc/(\d+)/',code).group(1)
@@ -79,7 +81,59 @@ class SnapshotWire(WireModel):
         raise AssertionError('unexpected fixture operation '+label)
 
 
+class LabelPermissionWire(SnapshotWire):
+    """Fictional OEM: run-as cannot read a label that authorized shell can read."""
+    def __init__(self,p):
+        super().__init__(p)
+        self.domains=[]
+
+    def app(self,code,label,data=None,mutating=False,timeout=45):
+        self.domains.append(('app',label,code))
+        if label=='read' and code.endswith('/proc/201/attr/current'):
+            raise m.Refusal('FICTIONAL run-as Permission denied')
+        return super().shell(code,label,data,mutating,timeout)
+
+    def shell(self,code,label,data=None,mutating=False,timeout=45):
+        self.domains.append(('shell',label,code))
+        return super().shell(code,label,data,mutating,timeout)
+
+
 class RemoteTests(unittest.TestCase):
+    def test_native_label_uses_authorized_shell_without_changing_other_app_reads(self):
+        p=profile();t=LabelPermissionWire(p)
+        remote=a.AndroidRemote(types.SimpleNamespace(p=p,r=release()),types.SimpleNamespace(event=lambda *x:None),transport=t)
+        snap=remote.snapshot()
+        self.assertEqual(snap['native']['pid'],201)
+        self.assertEqual(snap['native']['context'],'u:r:untrusted_app:s0:c1,c2')
+        for suffix in ('stat','status','cmdline','exe','attr/current'):
+            observations=[domain for domain,label,code in t.domains if
+                          label in ('read','process') and code.endswith('/proc/201/'+suffix)]
+            self.assertEqual(observations,['shell' if suffix=='attr/current' else 'app'])
+        for label,code,mutating in t.operations:self.assertFalse(mutating)
+
+    def test_native_shell_label_does_not_bypass_identity_or_unknown_server_gates(self):
+        cases=[('context',lambda t:t.files.__setitem__('/proc/201/attr/current',b'u:r:shell:s0')),
+               ('missing-context',lambda t:t.files.__setitem__('/proc/201/attr/current',b'')),
+               ('uid',lambda t:t.files.__setitem__('/proc/201/status',b'Uid:\t10123\t10124\t10123\t10123\n')),
+               ('unknown-uid',lambda t:t.files.__setitem__('/proc/201/status',b'Uid:\t10124\t10124\t10124\t10124\n')),
+               ('argv',lambda t:t.files.__setitem__('/proc/201/cmdline',t.files['/proc/201/cmdline'].replace(b'localhost:5038',b'localhost:5039'))),
+               ('unknown-server',lambda t:t.files.__setitem__('/proc/201/cmdline',b'FICTIONAL-unknown\0')),
+               ('exe',lambda t:t.exe.__setitem__('201',b'/FICTIONAL/unknown-adb')),
+               ('inode',lambda t:t.inodes.__setitem__('201','1:501'))]
+        for name,change in cases:
+            with self.subTest(gate=name):
+                p=profile();t=LabelPermissionWire(p);change(t)
+                remote=a.AndroidRemote(types.SimpleNamespace(p=p,r=release()),types.SimpleNamespace(event=lambda *x:None),transport=t)
+                with self.assertRaises(m.Refusal):remote.snapshot()
+        p=profile();t=LabelPermissionWire(p)
+        remote=a.AndroidRemote(types.SimpleNamespace(p=p,r=release()),types.SimpleNamespace(event=lambda *x:None),transport=t)
+        shell=t.shell
+        def denied(code,label,*args,**kwargs):
+            if code.endswith('/proc/201/attr/current'):raise m.Refusal('FICTIONAL shell Permission denied')
+            return shell(code,label,*args,**kwargs)
+        t.shell=denied
+        with self.assertRaisesRegex(m.Refusal,'FICTIONAL shell Permission denied'):remote.snapshot()
+
     def test_private_reads_check_ancestors_and_state_requires_0700(self):
         p=profile();t=SnapshotWire(p)
         remote=a.AndroidRemote(types.SimpleNamespace(p=p,r=release()),types.SimpleNamespace(event=lambda *x:None),True,transport=t)
