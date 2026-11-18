@@ -32,7 +32,7 @@ class ModelRemote:
         self.calls+=1
         if getattr(self,'late_stop',False):raise m.Refusal('FICTIONAL late Stop')
         return {k:v for k,v in self.snap['control'].items() if k!='config_preserved'}
-    def package(self):self.calls+=1;return copy.deepcopy(self.pkg)
+    def package(self, *, deadline=None, expected_version=None):self.calls+=1;return copy.deepcopy(self.pkg)
     def backup_installed(self,pkg,name):
         self.calls+=1;self.inputs.out.raw(name,b'FICTIONAL old APK' if pkg['version']==1 else b'FICTIONAL APK')
         return self.inputs.out.path/name

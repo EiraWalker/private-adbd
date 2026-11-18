@@ -6,8 +6,9 @@ import shlex
 import subprocess
 import xml.etree.ElementTree as ET
 import math
+import time
 
-from common import Refusal, need, sha
+from common import Refusal, ObservationUnavailable, need, sha
 from installer import APP, BIN, STATE, MANAGER, validate_profile
 from private_output import LABELS
 
@@ -26,19 +27,34 @@ def prefs_values(data):
     return result
 
 
-def validate_control(prefs,lease,health,clock,pending):
+def control_clock(data):
+    """Accept LF/CRLF framing without repairing identity or page-size tokens."""
+    need(type(data) is bytes and len(data)<=4096, 'control clock output size')
+    try: text=data.decode('ascii')
+    except UnicodeError: raise Refusal('control clock encoding') from None
+    text=text.replace('\r\n','\n')
+    need(not any(ord(c)<32 and c not in '\n\t' or ord(c)==127 for c in text),
+         'control clock output controls')
+    return (text[:-1] if text.endswith('\n') else text).split('\n')
+
+
+def validate_control(prefs,lease,health,clock,pending,*,elapsed=0.0):
     flags=prefs_values(prefs); owner=prefs_values(lease)
     need(flags.get('userStopped')=='false' and flags.get('safetyPaused')=='false' and
          flags.get('phase')=='healthy', 'Stop/safety/guardian gate')
     need(owner.get('ownedFlag')=='false', 'native lease owned')
-    need(len(clock)==4 and clock[2:]==['0','Enforcing'], 'native window/SELinux gate')
+    need(len(clock)==5 and clock[2:4]==['0','Enforcing'], 'native window/SELinux gate')
+    need(clock[4]=='4096', 'Termux APK page-size gate: requires 4096-byte kernel pages')
     need(pending is False, 'pending dispatch')
+    need(type(elapsed) in (int,float) and math.isfinite(elapsed) and elapsed>=0,
+         'control observation elapsed time')
     try:
         uptime=float(clock[1].split()[0])*1000
         stamp=health['uptime_ms']
         need(math.isfinite(uptime) and type(stamp) is int and
              health.get('state')=='healthy' and health.get('boot_id')==clock[0] and
-             0 <= uptime-stamp <= 30000,'heartbeat freshness')
+             0 <= uptime-stamp <= 30000 and
+             uptime-stamp+elapsed*1000 <= 30000,'heartbeat freshness')
     except (KeyError,ValueError,TypeError,IndexError):
         raise Refusal('heartbeat schema') from None
     return {'flags':{k:flags[k] for k in ('userStopped','safetyPaused')},
@@ -212,9 +228,15 @@ class Transport:
             r=subprocess.run(command,input=data,capture_output=True,timeout=timeout,shell=False)
         except subprocess.TimeoutExpired as exc:
             self.event(label,'timeout-unconfirmed',exc.stdout or b'',exc.stderr or b'')
-            raise Refusal('transport timeout; inspect before resume') from None
+            failure=Refusal if mutating else ObservationUnavailable
+            raise failure('transport timeout; inspect before resume') from None
+        except FileNotFoundError:
+            self.event(label,'unavailable',b'',b'')
+            failure=Refusal if mutating else ObservationUnavailable
+            raise failure('transport unavailable') from None
         except OSError:
             self.event(label,'unavailable',b'',b'')
+            # Permission/exec/unknown host errors are not availability evidence.
             raise Refusal('transport unavailable') from None
         self.event(label,r.returncode,r.stdout,r.stderr)
         need(r.returncode==0,'transport operation failed; inspect before resume')
@@ -239,13 +261,29 @@ class AndroidRemote:
 
     def bind_guard(self,guard):self.t.before_mutation=guard
 
-    def package(self):
+    def package(self, *, deadline=None, expected_version=None):
+        """One read-only package observation; never retries internally.
+
+        An optional absolute monotonic deadline is shared by both subprocesses;
+        each subprocess then gets at most five seconds (ordinary reads keep 45).
+        """
+        def budget():
+            if deadline is None:return 45
+            need(type(deadline) in (int,float) and math.isfinite(deadline),'package observation deadline')
+            remaining=deadline-time.monotonic()
+            if remaining<=0:
+                raise ObservationUnavailable('package observation budget exhausted')
+            return min(5,remaining)
         code=('getprop ro.serialno; id -u; id -Z; getenforce; run-as com.termux id -u; '
               "dumpsys package com.termux | grep -E 'versionCode=|userId=|appId='; pm path com.termux")
-        result=parse_package(self.t.shell(code,'package'),self.p)
-        raw=self.t.shell('set -eu; [ ! -L '+q(result['path'])+' ]; sha256sum '+q(result['path']),'installed-apk')
-        from installer import digest
-        result['sha256']=digest(raw.decode().split()[0])
+        result=parse_package(self.t.shell(code,'package',timeout=budget()),self.p)
+        if expected_version is not None:
+            need(type(expected_version) is int and result['version']==expected_version,
+                 'installed APK target version readback')
+        raw=self.t.shell('set -eu; [ ! -L '+q(result['path'])+' ]; sha256sum '+q(result['path']),'installed-apk',timeout=budget())
+        match=re.fullmatch(rb'([0-9a-f]{64})  '+re.escape(result['path'].encode('ascii'))+rb'(?:\r?\n)?',raw)
+        need(match is not None,'installed APK hash response schema/path')
+        result['sha256']=match.group(1).decode('ascii')
         return result
 
     def read(self,path,app=True):
@@ -359,11 +397,16 @@ class AndroidRemote:
 
     def control(self):
         from installer import json_bytes
+        # Add only a host duration, never a host timestamp, to device heartbeat
+        # age. Start before all reads so clock-response tails and presence are
+        # conservatively covered even when /proc/uptime was sampled earlier.
+        started=time.monotonic()
         prefs=self.read(APP+'/shared_prefs/private_adb_autostart.xml')
         lease=self.read(APP+'/shared_prefs/private_adb_native_lease.xml')
         health=json_bytes(self.read(STATE+'health.json'))
-        clock=self.t.shell('cat /proc/sys/kernel/random/boot_id; cat /proc/uptime; settings get global adb_wifi_enabled; getenforce','clock').decode().splitlines()
-        control=validate_control(prefs,lease,health,clock,self.presence(STATE+'start.pending'))
+        clock=control_clock(self.t.shell('set -eu; cat /proc/sys/kernel/random/boot_id; cat /proc/uptime; settings get global adb_wifi_enabled; getenforce; getconf PAGE_SIZE','clock'))
+        pending=self.presence(STATE+'start.pending')
+        control=validate_control(prefs,lease,health,clock,pending,elapsed=time.monotonic()-started)
         return control,health,clock
 
     def late_control(self):

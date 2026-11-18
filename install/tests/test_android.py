@@ -143,12 +143,12 @@ test "$@"
         prefs=b'<map><boolean name="userStopped" value="false"/><boolean name="safetyPaused" value="false"/><string name="phase">healthy</string></map>'
         lease=b'<map><boolean name="ownedFlag" value="false"/></map>'
         health={'state':'healthy','boot_id':'FICTIONAL-boot','uptime_ms':100000,'watch_pid':101,'child_pid':102}
-        a.validate_control(prefs,lease,health,['FICTIONAL-boot','110.0 1.0','0','Enforcing'],False)
-        for args in [(prefs.replace(b'false',b'true',1),lease,health,['FICTIONAL-boot','110.0 1.0','0','Enforcing'],False),
-                     (prefs,lease.replace(b'false',b'true'),health,['FICTIONAL-boot','110.0 1.0','0','Enforcing'],False),
-                     (prefs,lease,health,['FICTIONAL-boot','140.0 1.0','0','Enforcing'],False),
-                     (prefs,lease,health,['FICTIONAL-boot','110.0 1.0','1','Enforcing'],False),
-                     (prefs,lease,health,['FICTIONAL-boot','110.0 1.0','0','Enforcing'],True)]:
+        a.validate_control(prefs,lease,health,['FICTIONAL-boot','110.0 1.0','0','Enforcing','4096'],False)
+        for args in [(prefs.replace(b'false',b'true',1),lease,health,['FICTIONAL-boot','110.0 1.0','0','Enforcing','4096'],False),
+                     (prefs,lease.replace(b'false',b'true'),health,['FICTIONAL-boot','110.0 1.0','0','Enforcing','4096'],False),
+                     (prefs,lease,health,['FICTIONAL-boot','140.0 1.0','0','Enforcing','4096'],False),
+                     (prefs,lease,health,['FICTIONAL-boot','110.0 1.0','1','Enforcing','4096'],False),
+                     (prefs,lease,health,['FICTIONAL-boot','110.0 1.0','0','Enforcing','4096'],True)]:
             with self.subTest(args=args):
                 with self.assertRaises(m.Refusal): a.validate_control(*args)
 

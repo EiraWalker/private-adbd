@@ -101,8 +101,10 @@ def local_file(root, value):
 
 def validate_release(r, root):
     fields(r, ('schema', 'apk', 'sha256', 'version', 'package', 'signer_sha256',
-               'debuggable', 'baselines', 'payloads', 'remove_legacy'), ('source_revision',))
+               'debuggable', 'baselines', 'payloads', 'remove_legacy'), ('source_revision','maintenance_api'))
     need(type(r['schema']) is int and r['schema'] == 1, 'release schema')
+    if 'maintenance_api' in r:
+        need(type(r['maintenance_api']) is int and r['maintenance_api']==1, 'maintenance API version')
     need(r['package'] == 'com.termux' and r['debuggable'] is True, 'release package/debuggable')
     need(integer(r['version'], 1, 2**31-1), 'release version')
     digest(r['sha256']); digest(r['signer_sha256'])
@@ -169,18 +171,8 @@ def validate_profile(p):
     need(integer(p['native_port'], 1024, 65535) and p['native_port'] != 27184, 'native port')
     need(p['native_home'] in (APP + '/files/home', STATE + 'native-home'), 'native HOME')
     need(p['publisher'] in ('embedded', 'independent'), 'publisher mode')
-    t = p['transport']
-    fields(t, ('kind', 'argv'), ('serial',))
-    need(t['kind'] in ('controller', 'adb'), 'transport kind')
-    need(type(t['argv']) is list and 1 <= len(t['argv']) <= 16 and
-         all(isinstance(x, str) and x and not any(c in x for c in '\r\n\x00') for x in t['argv']),
-         'transport argv')
-    if t['kind'] == 'adb':
-        need(set(t) == {'kind', 'argv', 'serial'} and len(t['argv']) == 1, 'explicit adb selector')
-        need(isinstance(t['serial'], str) and re.fullmatch(r'[A-Za-z0-9_.:\[\]-]{1,200}', t['serial']),
-             'transport serial')
-    else:
-        need(set(t) == {'kind', 'argv'}, 'controller selector')
+    from discovery import validate_transport
+    validate_transport(p['transport'])
     return p
 
 
@@ -220,7 +212,16 @@ class Inputs:
 
 
 def run(args,remote_factory=None,sdk=None):
+    if args.command == 'probe':
+        need(not getattr(args, 'execute', False), 'probe is read-only')
+        from discovery import probe
+        transport = {'kind': args.transport_kind, 'argv': json_bytes(args.transport_argv.encode())}
+        if args.transport_serial is not None: transport['serial'] = args.transport_serial
+        return probe(transport, args.output, args.expected_serial)
     need(not args.execute or args.command in ('apply','resume'),'execute command scope')
+    if args.command == 'verify':
+        need(args.maintenance is None and args.checkpoint_sha256 is None,
+             'verify does not accept upgrade authorization')
     sdk=sdk or SDK(json_bytes(args.apksigner_argv.encode()),json_bytes(args.aapt_argv.encode()))
     inputs=Inputs(args.profile,args.release,sdk)
     if args.command in ('plan','apply','resume') and not args.execute:
@@ -230,6 +231,10 @@ def run(args,remote_factory=None,sdk=None):
                               'owned-stage','install-r-once','after-apk-payloads','bounded-native-rebuild',
                               'full-readback','exact-legacy-cleanup','owned-cleanup','complete-readback'],
                 'source_metadata_verified':False}
+        if inputs.r.get('maintenance_api')==1:
+            result['operations'].insert(result['operations'].index('owned-lock'),'maintenance-acquire')
+            result['operations'].insert(result['operations'].index('install-r-once')+1,'maintenance-reack')
+            result['operations'].append('maintenance-release')
         out.write('plan.json',result)
         return result
     # Only an explicit device command reaches the live construction boundary.
@@ -237,6 +242,9 @@ def run(args,remote_factory=None,sdk=None):
     from upgrade import Engine, Authorization
     out=PrivateOutput(args.output,create=args.command!='resume')
     remote=(remote_factory or AndroidRemote)(inputs,out,args.execute)
+    if args.command=='verify':
+        from stability import verify_stability
+        return verify_stability(remote,inputs,out)
     if args.command=='inspect':
         package=remote.package()
         snapshot=remote.snapshot(allow_missing_native=True)
@@ -246,17 +254,42 @@ def run(args,remote_factory=None,sdk=None):
     return Engine(inputs,remote,out,authorization).run(resume=args.command=='resume',checkpoint_hash=args.checkpoint_sha256)
 
 
+class CommandParser(argparse.ArgumentParser):
+    """Keep legacy option ordering, but never ignore command-specific options."""
+    def parse_args(self, args=None, namespace=None):
+        result=super().parse_args(args, namespace)
+        probe_fields=('transport_kind','transport_argv','transport_serial','expected_serial')
+        upgrade_fields=('profile','release','execute','maintenance','checkpoint_sha256','apksigner_argv','aapt_argv')
+        forbidden=upgrade_fields if result.command=='probe' else probe_fields
+        if any(getattr(result, name) is not None for name in forbidden):
+            self.error('options outside selected command scope')
+        required=('transport_kind','transport_argv') if result.command=='probe' else ('profile','release')
+        if any(getattr(result, name) is None for name in required):
+            self.error('probe requires --transport-kind/--transport-argv; other commands require --profile/--release')
+        if result.command=='verify' and (result.maintenance is not None or result.checkpoint_sha256 is not None):
+            self.error('verify does not accept upgrade authorization')
+        if result.command!='probe':
+            result.execute=bool(result.execute)
+            if result.apksigner_argv is None: result.apksigner_argv='["apksigner"]'
+            if result.aapt_argv is None: result.aapt_argv='["aapt"]'
+        return result
+
+
 def parser():
-    p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('command',choices=('plan','inspect','apply','resume'))
-    p.add_argument('--profile',type=Path,required=True)
-    p.add_argument('--release',type=Path,required=True)
+    p=CommandParser(description=__doc__, epilog='probe is read-only; apply/resume --execute requires actual owner handoff.')
+    p.add_argument('command',choices=('probe','plan','inspect','verify','apply','resume'))
+    p.add_argument('--profile',type=Path,help='required except probe: actual existing-deployment profile')
+    p.add_argument('--release',type=Path,help='required except probe: pinned release manifest')
     p.add_argument('--output',type=Path,required=True,help='new private output directory outside repository; resume reuses it')
-    p.add_argument('--execute',action='store_true',help='explicitly authorize mutation path; owner handoff still required')
-    p.add_argument('--maintenance',type=Path,help='actual owner-issued, short-lived local handoff JSON')
-    p.add_argument('--checkpoint-sha256',help='exact private checkpoint hash for explicit resume')
-    p.add_argument('--apksigner-argv',default='["apksigner"]',help='JSON argv prefix; e.g. Java plus apksigner.jar')
-    p.add_argument('--aapt-argv',default='["aapt"]',help='JSON argv prefix for Android SDK aapt')
+    p.add_argument('--execute',action='store_true',default=None,help='upgrade only: explicitly authorize mutation; owner handoff still required')
+    p.add_argument('--maintenance',type=Path,help='upgrade only: actual owner-issued short-lived local handoff JSON')
+    p.add_argument('--checkpoint-sha256',help='upgrade only: exact private checkpoint hash for explicit resume')
+    p.add_argument('--apksigner-argv',help='upgrade only: trusted JSON SDK argv prefix (default ["apksigner"])')
+    p.add_argument('--aapt-argv',help='upgrade only: trusted JSON SDK argv prefix (default ["aapt"])')
+    p.add_argument('--transport-kind',choices=('adb','controller'),help='probe only, required: already-authorized transport kind')
+    p.add_argument('--transport-argv',help='probe only, required: trusted JSON argv; adb requires exactly one executable')
+    p.add_argument('--transport-serial',help='probe only: exact selector required for adb, forbidden for controller')
+    p.add_argument('--expected-serial',help='probe only: optional exact ro.serialno binding, independent of transport selector')
     return p
 
 

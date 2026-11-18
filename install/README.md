@@ -1,5 +1,15 @@
 # Existing-deployment upgrader
 
+**Supported installer computer: Windows. Installation target: Android.**
+Linux-desktop installer support is outside the current delivery scope. Tests that
+exercise Unix permissions or Android shell behavior do not make Linux a required
+installer host. Android UID, SELinux, permission and authentication checks remain
+mandatory.
+
+For daemon installation without a Termux APK upgrade, start with the
+[standalone core bootstrap](CORE-BOOTSTRAP.md). The APK-upgrade workflow below is
+a separate optional path, not a prerequisite for installing private-adbd.
+
 Python **3.11+**, standard library only. Entry point:
 
 ```sh
@@ -7,7 +17,62 @@ python -S install/installer.py --help
 python -m unittest discover -s install/tests -v
 ```
 
-This is a **forward-only upgrader**, not an enrollment or repair tool. It requires an already provisioned, debuggable `com.termux` fork, a healthy existing private-adbd shell supervisor, and an explicitly selected, already authorized controller transport. No APKs, keys, device identities or release receipts are bundled.
+This is a **forward-only upgrader**, not an enrollment or repair tool. Its upgrade commands require an already provisioned, debuggable `com.termux` fork, a healthy existing private-adbd shell supervisor, and an explicitly selected, already authorized controller transport. No APKs, keys, device identities or release receipts are bundled.
+
+See the [Android adaptation guide and acceptance matrix](ADAPTATION.md) for mode
+selection, transport/artifact/owner prerequisites and unverified platform boundaries.
+
+## Read-only capability probe
+
+`probe` is a separate explicit device-read command. It does **not** require a
+profile, known app UID, release/APK, SDK tool, maintenance record or `--execute`:
+
+```sh
+python -S install/installer.py probe \
+  --transport-argv '["adb"]' --transport-kind adb \
+  --transport-serial FICTIONAL-USB-001 \
+  --output /private/evidence/new-probe
+
+# Or an already endpoint-bound trusted controller implementing shell CODE:
+python -S install/installer.py probe \
+  --transport-kind controller --transport-argv '["/trusted/fixed-controller"]' \
+  --expected-serial FICTIONAL-PHONE-001 \
+  --output /private/evidence/new-controller-probe
+```
+
+ADB accepts exactly one executable and always receives `-s EXACT_SELECTOR shell
+-T CODE`. The selector is not `ro.serialno`; optional `--expected-serial` binds
+that independently observed property exactly. Discovery without that option records
+an identity, **not a configured-serial match or authorization**; upgrade commands
+still require and prove their profile's expected serial. Controller argv must already bind
+one intended endpoint; it cannot also take `--transport-serial`. No first-device
+selection, scan, connect, root, pairing, app launch or Android write is performed.
+All reads are fixed allowlisted shell text, with `shell=False` on the host and a
+15-second timeout per transport call. These trusted executables are operator
+configuration, never untrusted device-provided callbacks.
+
+New private `device.json` and `capability.json` record only serial/shell identity
+(UID 2000, exact `u:r:shell:s0`, Enforcing), boot ID, Android SDK, ABI properties,
+current Android user, selected command presence, and scoped `com.termux` package
+UID/version/debuggable/path/split/run-as observations. Package queries explicitly
+cover **primary user 0**; the existing fixed Termux prefix cannot support other
+current users. Missing Termux is reported without inventing an app UID. Missing
+commands, unknown primary ABI, non-primary current user, nondebuggable/split APKs
+and denied `run-as` are explicit unsupported reasons; ambiguous or conflicting
+identity/output refuses. Identifiers are never trimmed or repaired; CRLF line
+terminators alone are accepted. No full property dump, app/process inventory,
+user files, logs or keys are read. Command discovery reports paths without ever
+executing a device-returned path.
+
+Stdout contains only a summary, actual `device_calls`, and `read_only: true`.
+ABI-to-Go architecture mapping and SDK reporting are **not Android/OEM/ABI
+certification**, install readiness, initial provisioning or maintenance authority:
+`compatibility_verified` stays false and unverified release/runtime/authorization
+gates remain explicit. `probe --execute`, release/SDK/maintenance flags on probe,
+and probe transport flags on existing commands are errors, not silently ignored.
+All existing upgrade commands still require real profile/release/SDK validation;
+local-only plan/apply/resume remain zero-device-call operations.
+
 
 ## What it does not do
 
@@ -39,7 +104,7 @@ python -S install/installer.py apply \
 Android SDK `apksigner` and `aapt` are required for all artifact checks. Supply trusted executable argv prefixes as JSON; they are invoked with `shell=False`, never interpolated into a host shell:
 
 ```sh
-# Append these options to any command (use your own SDK paths):
+# Append these options to an upgrade command (not probe; use your own SDK paths):
 --apksigner-argv '["java", "-jar", "/opt/android/build-tools/lib/apksigner.jar"]' \
 --aapt-argv '["/opt/android/build-tools/aapt"]'
 ```
@@ -113,6 +178,92 @@ APK replacement is an **app-UID process lifecycle boundary**. Shell watch/child 
 Only a confirmed target APK plus the durable, correctly ordered `native-start` intent can authorize the original app context to change to the **exact baseline-captured** launch context. That same explicit policy validates immediate readback, uncertain-start reconciliation and saved `native_after` on checkpoint load. Every ordinary guard still requires the original PID/starttime/context or the already-confirmed exact `native_after`; it compares launch evidence even when the native server is absent. The transport's late gate rereads launch identity after the snapshot and immediately before mutation dispatch, alongside Stop/lease/boot and maintenance. Confirmation retains the actual after-context only after all runtime, key, file, listener and late control gates pass. Root/system/shell labels, different categories or any other identity drift are refused, with no restart fallback.
 
 This captures the authorized launch-shell identity, **not proof of an Android native exec transition**. Real post-start readback must still prove the actual server. Host fixtures model the controlled transition and are not Android acceptance. No restart should be performed merely to manufacture launch evidence.
+
+### Same-UID maintenance-aware upgrades (explicit opt-in)
+
+A reviewed release may add **`"maintenance_api": 1`** to release schema 1. Only
+integer 1 is accepted (not `true`, `1.0`, a string or an unknown version). Missing
+this field retains the original strict schema-1 workflow; API unsupported never
+selects that legacy path automatically. A separately reviewed first capability
+bootstrap from an API-less APK and a subsequent genuinely changing API-aware
+upgrade are distinct acceptance steps. An old failed checkpoint cannot be
+rebased, converted to schema 2, or reported as successful bootstrap.
+
+The same original host owner handoff, profile/release hashes, SDK signature and
+manifest verification, execute flag, serial/UID/SELinux policy and all runtime,
+PID/material/key/listener checks remain mandatory. The maintenance API is an
+additional gate, not permission to adopt a different guardian/watch/child/native
+process, enable anything, clear Stop/safety, open a window or renew a lease.
+
+API-aware execution uses **checkpoint schema 2**, with the original private
+`maintenance: {request, control}` record. The record binds a fresh token, actual
+device boot/elapsed deadline (at most ten minutes), exact profile/release hashes,
+baseline/target versions and existing control state. It is persisted together
+with the acquisition intent **before** request dispatch. It is never copied to
+public result fields or replaced on resume. Ordered checkpoints are:
+
+1. `maintenance-acquire`: full original checks, one fixed same-UID request, and
+   an exact ten-field active owner acknowledgement **before** lock, payload,
+   staging or install. Unsupported old helpers stop here, before those writes.
+2. Existing lock/payload/stage/seal and **one** bounded APK install; exact target
+   package readback must succeed.
+3. `maintenance-reack`: fresh status from the replacement APK/process using the
+   **same** request and remaining deadline. A lost static ack across replacement
+   is expected; it is not permission to request again. Only acquire and this
+   APK-confirmed stage may bounded-poll a valid pending reply (three attempts,
+   250 ms between attempts, ten-second acceptance deadline).
+4. Existing after-APK files, exact native transition, postchecks, any scoped
+   legacy removal, token-owned staging/lock cleanup, and complete readback.
+5. `maintenance-release`: durable intent, fresh full checks and one release.
+   Only exact bound released readback completes this step; expired is not
+   released. A receipt appears only after this step.
+
+Each real upgrade mutation still goes through the actual bound
+`Transport.before_mutation -> Engine.guard` immediately before subprocess
+execution. Schema 2 alone eliminates the duplicate earlier full guard: quick
+host authorization/input checks precede the durable intent, then the transport
+performs one full package/runtime/material guard. No guard is detached and no
+snapshot or ack is cached. The guard obtains a fresh active status after slow
+snapshots, reserves the actual timeout (180 seconds for push/install, 15 for
+native start, 45 for other writes), 30 seconds for acknowledgement/final gates,
+and another 30-second dispatch margin. Ack plus the final original late
+Stop/lease/boot/launch/host-authority gates must finish within that first
+30-second allowance or dispatch refuses. Slow observations are not a reason to
+weaken the deadline or identity checks.
+
+An explicit checkpoint-hash-bound resume constructs the real client from the
+original record. Unknown acquire/reack outcomes can use status only; unknown
+install/native-start outcomes retain their exact postcondition-only/no-replay
+rules. An unknown release may reconcile only an exact full bound released status
+against its existing release intent; pending, active, wrong ownership/bindings,
+unsupported, expired and unknown replies never authorize another release or turn
+failure green. For that existing release intent alone, `reconcile_release()`
+uses a fresh real checkpoint-hash-bound handoff and the exact target APK to make
+one fixed, at-most-five-second status IPC, even after the original deadline.
+It accepts only a strict ten-field reply matching the original request, exact
+owner UID and `released`, then retains the original runtime/material and final
+late gates. This terminal
+observation grants no active lease or mutation authority; it neither polls nor
+repeats release. Ordinary request/status/wait/assert-active/release retain their
+original deadline. Original token, request field types and deadline are never
+changed, and expired/revoked are never interpreted as released.
+
+Once release is durably confirmed, completed/post-release resume and postchecks
+retain all original package/runtime/material and late Stop checks but do not
+require an active lease or issue lifecycle IPC. A fresh already-current apply
+performs no maintenance request and returns `already-current`, not evidence of a
+newly accepted upgrade. API request/status/release are explicit lifecycle IPCs;
+none are used by probe, inspect, verify or offline plan. Local plan/default
+apply/default resume still construct no remote and report `device_calls: 0`.
+
+`test_engine_maintenance.py` combines the real Engine and MaintenanceClient with
+a fictional two-version runtime and actual local Python transport subprocesses.
+It covers journal-before-request, post-install fresh reack, no-replay recovery,
+release response loss, strict bindings, Stop, deadline budgets and malformed
+checkpoints. This is host implementation evidence, **not Android same-UID socket,
+PackageManager, app quiescence, native TLS or OEM acceptance**. See
+[MAINTENANCE.md](MAINTENANCE.md) for the fixed client/wire contract; real producer
+and deployed-APK acceptance remain separate.
 
 ### Checked replacement, not kernel CAS
 

@@ -95,6 +95,13 @@ sample() {
  snapshot=$(toybox timeout 5 "$SH" "$SERVICE" status 9>&- 2>/dev/null); result=$?
  if [ "$result" -eq 0 ] && parse_status; then
   publish healthy "$wp" "$cp"
+ elif [ "$result" -eq 1 ] && [ "$snapshot" = 'watch=transition child=transition birth=busy' ]; then
+  # No snapshot was observed. Keep the last real heartbeat (and its age/cap).
+  return 0
+ elif [ "$result" -eq 124 ]; then
+  # toybox timeout's default deadline result, not a service status code.
+  # Never turn missing/partial observations into fresh health or core failure.
+  return 0
  elif [ "$result" -eq 3 ]; then
   publish stopped 0 0
  else

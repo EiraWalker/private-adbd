@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 import uuid
 import re
-from common import Refusal, need, sha
+from common import Refusal, ObservationUnavailable, need, sha
 from installer import json_bytes, validate_maintenance
 from private_output import no_links
 from android import validate_native_transition, validate_native_launch
@@ -51,17 +51,20 @@ class Authorization:
 class Engine:
     def __init__(self,inputs,remote,out,authorization):
         self.i=inputs;self.r=remote;self.out=out;self.auth=authorization;self.cp=None
+        self.maintenance=None
+        self.api=inputs.r.get('maintenance_api')==1
         self.r.bind_guard(self.guard)
 
     def save(self): self.out.write('checkpoint.json',self.cp)
 
     def operation_order(self):
-        return (['acquire-lock']+
+        return ((['maintenance-acquire'] if self.api else [])+['acquire-lock']+
                 ['payload-'+str(n) for n,p in enumerate(self.i.r['payloads']) if p['phase']=='before_apk']+
                 ['stage-reserve','push','stage-seal','install']+
+                (['maintenance-reack'] if self.api else [])+
                 ['payload-'+str(n) for n,p in enumerate(self.i.r['payloads']) if p['phase']=='after_apk']+
                 ['native-start']+(['legacy-remove'] if self.i.r['remove_legacy'] else [])+
-                ['stage-clean','lock-release'])
+                ['stage-clean','lock-release']+(['maintenance-release'] if self.api else []))
 
     def package_allowed(self,pkg):
         r=self.i.r
@@ -85,9 +88,10 @@ class Engine:
         if native is None:
             need(allow_missing and after['listeners']==[x for x in before['listeners'] if x!=before['native']['listener']], 'unexpected missing native server/listeners')
         else:
-            need(native==expected and after['listeners']==before['listeners'], 'unapproved native server replacement/listeners')
+            need(same_json_value(native,expected) and same_json_value(after['listeners'],before['listeners']),
+                 'unapproved native server replacement/listeners')
 
-    def guard(self):
+    def guard(self, *, lease=True):
         self.auth.check();self.i.unchanged()
         pkg=self.r.package();self.package_allowed(pkg)
         if self.cp['apk_confirmed']:
@@ -97,7 +101,20 @@ class Engine:
         after=self.r.snapshot(allow_missing_native=self.cp['apk_confirmed'])
         self.preserved(after,self.cp['apk_confirmed'])
         self.files_progress()
+        ack_started=None
+        if self.api and lease and 'maintenance-release' not in self.cp['done']:
+            need('maintenance-acquire' in self.cp['done'],'maintenance acquisition required')
+            need(not self.cp['apk_confirmed'] or 'maintenance-reack' in self.cp['done'],
+                 'replacement APK fresh acknowledgement required')
+            # Actual AndroidRemote bounds: install/push 180s, native start 15s,
+            # all other mutating transport calls 45s. Reserve 30s for the
+            # acknowledgement/final late gates AND 30s dispatch safety margin.
+            timeout_ms={'install':180000,'push':180000,'native-start':15000}.get(self.cp['intent'],45000)
+            ack_started=time.monotonic()
+            self.maintenance.assert_active(minimum_remaining_ms=timeout_ms+60000)
         self.late_gates()
+        if ack_started is not None:
+            need(0<=time.monotonic()-ack_started<=30,'maintenance final dispatch budget exhausted')
         return after
 
     def late_gates(self):
@@ -108,17 +125,63 @@ class Engine:
         # Keep Stop/lease/boot freshness after it, not before it.
         late=self.r.late_control()
         expected={k:self.cp['before']['control'][k] for k in ('flags','lease_sha256','boot')}
-        need(late==expected,'late Stop/lease/boot gate changed')
+        need(same_json_value(late,expected),'late Stop/lease/boot gate changed')
         self.auth.check()
 
     def mutate(self,name,action,confirm):
         if name in self.cp['done']:return
         need(self.operation_order()[len(self.cp['done'])]==name,'operation ordering')
-        self.guard()
+        if self.api:
+            # Only schema 2 journals before the real Transport dispatch guard.
+            # Every AndroidRemote mutation still uses its bound before_mutation;
+            # never detach/cache that full runtime/material check.
+            self.auth.check();self.i.unchanged()
+        else:
+            self.guard()
         self.cp['phase']=name;self.cp['intent']=name;self.save()
         action()
         need(confirm(),'mutation readback incomplete')
         self.cp['done'].append(name);self.cp['intent']=None;self.save()
+
+    def maintenance_step(self,name):
+        if name in self.cp['done']:return
+        need(self.operation_order()[len(self.cp['done'])]==name,'maintenance operation ordering')
+        self.auth.check();self.i.unchanged()
+        self.cp['phase']=name;self.cp['intent']=name;self.save()
+        self.guard(lease=name=='maintenance-release')
+        if name=='maintenance-acquire':
+            reply=self.maintenance.request_once()
+        elif name=='maintenance-reack':
+            need(self.cp['apk_confirmed'],'maintenance reack requires confirmed APK')
+            reply=self.maintenance.status()
+        else:
+            reply=self.maintenance.release_once()
+        if name!='maintenance-release' and reply['phase']=='pending':
+            self.maintenance.wait_active(max_attempts=3,poll_ms=250,timeout_ms=10000)
+        self.late_gates()
+        self.cp['done'].append(name);self.cp['intent']=None;self.save()
+
+    def confirmed_install(self):
+        """Bounded package-only observation after a successful install response.
+
+        No operation replay, status command, snapshot or arbitrary shell retries.
+        A valid but unexpected package returns False immediately. Resume of an
+        unknown install outcome deliberately retains the one-shot installed().
+        """
+        deadline=time.monotonic()+15
+        for attempt in range(3):
+            self.auth.check();self.i.unchanged()
+            need(time.monotonic()<deadline,'installed APK observation budget exhausted')
+            try:
+                pkg=self.r.package(deadline=deadline,expected_version=self.i.r['version'])
+            except ObservationUnavailable:
+                if attempt==2 or time.monotonic()>=deadline:
+                    raise Refusal('installed APK observation unavailable; explicit resume required') from None
+                time.sleep(min(1, max(0, deadline-time.monotonic())))
+                continue
+            self.auth.check();self.i.unchanged()
+            need(time.monotonic()<=deadline,'installed APK observation budget exhausted')
+            return pkg['version']==self.i.r['version'] and pkg['sha256']==self.i.r['sha256']
 
     def installed(self):
         pkg=self.r.package()
@@ -168,7 +231,7 @@ class Engine:
             time.sleep(1)
             after=self.r.snapshot();self.preserved(after)
         self.late_gates()
-        if save:
+        if save and not (self.api and 'maintenance-release' in self.cp['done']):
             self.cp['phase']='postcheck';self.save()
 
     def new(self):
@@ -186,15 +249,21 @@ class Engine:
                                          'source_metadata_verified':False,'native_window_validation':'not-run'})
             return {'result':'already-current','device_calls':self.r.calls,'native_window_validation':'not-run'}
         need(package['version']<self.i.r['version'],'target already present; inspect or explicit checkpoint resume')
-        self.cp={'schema':1,'bindings':self.i.bindings,'token':uuid.uuid4().hex,'phase':'preflight',
+        cp={'schema':2 if self.api else 1,'bindings':self.i.bindings,'token':uuid.uuid4().hex,'phase':'preflight',
                  'intent':None,'done':[],'before':before,'baseline_package':package,
                  'backups':{},'native_after':None,'apk_confirmed':False}
+        if self.api:
+            from maintenance import MaintenanceClient
+            self.maintenance=MaintenanceClient(self.r,self.auth)
+            cp['maintenance']=self.maintenance.prepare(ttl_ms=600000)
+        self.cp=cp
         self.save()
         self.capture_files()
         self.save()
 
     def finish(self):
         token=self.cp['token']
+        if self.api:self.maintenance_step('maintenance-acquire')
         self.mutate('acquire-lock',lambda:self.r.acquire_lock(token),lambda:self.r.lock_owned(token))
         for index,p in enumerate(self.i.r['payloads']):
             if p['phase']=='before_apk':
@@ -202,8 +271,9 @@ class Engine:
         self.mutate('stage-reserve',lambda:self.r.reserve_stage(token),lambda:self.r.stage_owned(token))
         self.mutate('push',lambda:self.r.push_apk(token),lambda:self.r.stage_owned(token,True,allow_unsealed=True))
         self.mutate('stage-seal',lambda:self.r.seal_stage(token),lambda:self.r.stage_owned(token,True))
-        self.mutate('install',lambda:self.r.install_apk(token),self.installed)
+        self.mutate('install',lambda:self.r.install_apk(token),self.confirmed_install)
         self.cp['apk_confirmed']=True;self.save()
+        if self.api:self.maintenance_step('maintenance-reack')
         for index,p in enumerate(self.i.r['payloads']):
             if p['phase']=='after_apk':
                 self.mutate('payload-'+str(index),lambda p=p:self.r.write_payload(p,token),lambda p=p:self.exact_payload(p))
@@ -222,6 +292,7 @@ class Engine:
         self.mutate('stage-clean',lambda:self.r.clean_stage(token),lambda:self.r.stage_absent(token))
         self.mutate('lock-release',lambda:self.r.release_lock(token),self.r.lock_absent)
         self.postcheck()
+        if self.api:self.maintenance_step('maintenance-release')
         self.cp['phase']='complete';self.save()
         self.out.write('receipt.json',{'schema':1,'result':'upgraded','bindings':self.i.bindings,
                                      'source_metadata_verified':False,'native_window_validation':'not-run'})
@@ -249,8 +320,9 @@ class Engine:
         need(sha(data)==checkpoint_hash,'checkpoint hash mismatch')
         cp=json_bytes(data)
         fields(cp,('schema','bindings','token','phase','intent','done','before','baseline_package',
-                   'backups','native_after','apk_confirmed'))
-        need(type(cp['schema']) is int and cp['schema']==1 and cp['bindings']==self.i.bindings,'checkpoint input binding')
+                   'backups','native_after','apk_confirmed')+(('maintenance',) if self.api else ()))
+        need(type(cp['schema']) is int and cp['schema']==(2 if self.api else 1) and
+             same_json_value(cp['bindings'],self.i.bindings),'checkpoint input binding')
         need(isinstance(cp['token'],str) and re.fullmatch('[0-9a-f]{32}',cp['token']),'checkpoint token')
         order=self.operation_order();done=cp['done']
         need(type(done) is list and done==order[:len(done)] and len(done)<=len(order),'checkpoint operation prefix')
@@ -259,6 +331,29 @@ class Engine:
              (cp['intent'] is None or cp['phase']==cp['intent']),'checkpoint phase')
         need(cp['phase']!='complete' or (done==order and cp['intent'] is None),'incomplete complete checkpoint')
         need(type(cp['apk_confirmed']) is bool and (not cp['apk_confirmed'] or 'install' in done), 'checkpoint APK flag')
+        if self.api:
+            from maintenance import MaintenanceClient
+            # Construction validates every original record field without IPC;
+            fields(cp['before'],('control','pids','shell_files','wrapper_state','key_metadata_sha256',
+                                 'listeners','native','health_uptime'),('native_launch',))
+            fields(cp['baseline_package'],('uid','version','sha256','path'))
+            need(type(cp['before']['control']) is dict and
+                 {'flags','lease_sha256','boot'}<=cp['before']['control'].keys(), 'checkpoint control fields')
+            need(type(cp['baseline_package']['uid']) is int and
+                 cp['baseline_package']['uid']==self.i.p['app_uid'],'checkpoint maintenance UID')
+            # restored clients are status-only, never request again.
+            self.maintenance=MaintenanceClient(self.r,self.auth,checkpoint=cp['maintenance'])
+            req=cp['maintenance']['request']
+            control={k:cp['before']['control'][k] for k in ('flags','lease_sha256','boot')}
+            need(same_json_value(control,cp['maintenance']['control']) and
+                 type(cp['baseline_package']['version']) is int and
+                 req['baselineVersion']==cp['baseline_package']['version'], 'checkpoint maintenance baseline binding')
+            need(('maintenance-reack' not in done and cp['intent']!='maintenance-reack') or
+                 cp['apk_confirmed'],'checkpoint reack APK flag')
+            if cp['intent'] is None:
+                need(cp['phase']==(done[-1] if done else 'preflight') or
+                     (cp['phase']=='postcheck' and 'native-start' in done and 'maintenance-release' not in done) or
+                     cp['phase']=='complete','checkpoint maintenance phase progress')
         fields(cp['before'],('control','pids','shell_files','wrapper_state','key_metadata_sha256','listeners','native','health_uptime'),('native_launch',))
         fields(cp['baseline_package'],('uid','version','sha256','path'))
         need(type(cp['before']['native']) is dict and cp['baseline_package']['uid']==self.i.p['app_uid'],'checkpoint baseline identity')
@@ -305,7 +400,19 @@ class Engine:
             'stage-clean':lambda:self.r.stage_absent(token),
             'lock-release':self.r.lock_absent,
         }
-        if intent.startswith('payload-'):
+        if self.api and intent in ('maintenance-acquire','maintenance-reack'):
+            self.guard(lease=False)
+            reply=self.maintenance.status()
+            if reply['phase']=='pending':
+                self.maintenance.wait_active(max_attempts=3,poll_ms=250,timeout_ms=10000)
+            self.late_gates()
+        elif self.api and intent=='maintenance-release':
+            self.validate_progress(lease=False)
+            self.maintenance.reconcile_release(checkpoint_hash=self.auth.checkpoint_hash)
+            # Terminal proof grants no lease: retain all original independent
+            # runtime/package/control checks without dispatching any mutation.
+            self.guard(lease=False)
+        elif intent.startswith('payload-'):
             n=int(intent.split('-')[1]);need(self.exact_payload(self.i.r['payloads'][n]),'uncertain payload; no replay')
         elif intent=='native-start':
             after=self.r.snapshot(allow_missing_native=True)
@@ -317,7 +424,7 @@ class Engine:
         if intent=='install':self.cp['apk_confirmed']=True
         self.save()
 
-    def validate_progress(self):
+    def validate_progress(self, *, lease=True):
         token=self.cp['token'];done=self.cp['done']
         if 'acquire-lock' in done and 'lock-release' not in done:need(self.r.lock_owned(token),'checkpoint lock no longer owned')
         if 'lock-release' in done:need(self.r.lock_absent(),'completed lock cleanup changed')
@@ -327,7 +434,7 @@ class Engine:
         if 'install' in done:self.target_package()
         else:need(self.r.package()==self.cp['baseline_package'],'baseline APK changed outside pending install')
         self.files_progress()
-        self.guard()
+        self.guard(lease=lease)
 
     def files_progress(self):
         done=self.cp['done']
@@ -352,7 +459,8 @@ class Engine:
             if resume:
                 self.load(checkpoint_hash)
                 self.reconcile()
-                self.validate_progress()
+                reack=self.api and self.cp['apk_confirmed'] and 'maintenance-reack' not in self.cp['done']
+                self.validate_progress(lease=not reack)
                 if self.cp['phase']=='complete':
                     self.postcheck(save=False)
                     return {'result':'already-current','device_calls':self.r.calls,'native_window_validation':'not-run'}

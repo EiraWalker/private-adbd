@@ -1,5 +1,8 @@
 import base64
 import json
+import shlex
+import shutil
+import subprocess
 from pathlib import Path
 import tempfile
 import types
@@ -58,7 +61,7 @@ class SnapshotWire(WireModel):
         if label in ('package','installed-apk'):return super().shell(code,label,data,mutating,timeout)
         self.calls+=1;self.operations.append((label,code,mutating))
         if label=='read':return base64.b64encode(self.files[shlex.split(code)[-1]])+b'\n'
-        if label=='clock':return b'FICTIONAL-boot\n120.0 1.0\n0\nEnforcing\n'
+        if label=='clock':return b'FICTIONAL-boot\n120.0 1.0\n0\nEnforcing\n4096\n'
         if label=='presence':return b'yes' if self.pending else b'no'
         if label=='lock-probe':return b''
         if label=='keys-stat':return b'700 10123 10123 1 1 FICTIONAL-key-directory\n600 10123 10123 1 1 FICTIONAL-existing-key\n'
@@ -98,7 +101,101 @@ class LabelPermissionWire(SnapshotWire):
         return super().shell(code,label,data,mutating,timeout)
 
 
+class ClockProducerWire(SnapshotWire):
+    """Run the actual control shell producer with fictional kernel commands."""
+    def __init__(self,p,page='16384\n',status=0,wifi='0',selinux='Enforcing',crlf=False):
+        super().__init__(p)
+        self.page=page;self.status=status;self.clock_output=None
+        self.wifi=wifi;self.selinux=selinux;self.crlf=crlf
+
+    def shell(self,code,label,data=None,mutating=False,timeout=45):
+        if label!='clock':return super().shell(code,label,data,mutating,timeout)
+        self.calls+=1;self.operations.append((label,code,mutating))
+        setup=('cat() { case "$1" in /proc/sys/kernel/random/boot_id) printf "FICTIONAL-boot\\n" ;; '
+               '/proc/uptime) printf "120.0 1.0\\n" ;; *) return 91 ;; esac; }\n'
+               "settings() { printf '%s\\n' "+shlex.quote(self.wifi)+"; }\n"
+               "getenforce() { printf '%s\\n' "+shlex.quote(self.selinux)+"; }\n"
+               'getconf() { [ "$#" = 1 ] && [ "$1" = PAGE_SIZE ] || return 92; '
+               "printf '%b' "+shlex.quote(''.join('\\%03o'%b for b in self.page.encode('utf-8')))+
+               '; return '+str(self.status)+'; }\n')
+        shell=shutil.which('sh');assert shell is not None
+        result=subprocess.run([shell,'-c',setup+code],capture_output=True,timeout=15,shell=False)
+        self.clock_output=result.stdout.replace(b'\n',b'\r\n') if self.crlf else result.stdout
+        if result.returncode:raise m.Refusal('transport operation failed; inspect before resume')
+        return self.clock_output
+
+
 class RemoteTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which('sh'),'requires host shell for fictional clock producer')
+    def test_actual_control_producer_refuses_16k_kernel_before_apk_flow(self):
+        p=profile();t=ClockProducerWire(p)
+        remote=a.AndroidRemote(types.SimpleNamespace(p=p,r=release()),types.SimpleNamespace(event=lambda *x:None),transport=t)
+        with self.assertRaises(m.Refusal):remote.late_control()
+        self.assertEqual(t.clock_output,b'FICTIONAL-boot\n120.0 1.0\n0\nEnforcing\n16384\n')
+        self.assertTrue(all(not mutating for _,_,mutating in t.operations))
+
+    @unittest.skipUnless(shutil.which('sh'),'requires host shell for fictional clock producer')
+    def test_actual_control_producer_rejects_bare_cr_framing(self):
+        p=profile();t=ClockProducerWire(p,page='4096\r')
+        remote=a.AndroidRemote(types.SimpleNamespace(p=p,r=release()),types.SimpleNamespace(event=lambda *x:None),transport=t)
+        with self.assertRaises(m.Refusal):remote.late_control()
+
+    @unittest.skipUnless(shutil.which('sh'),'requires host shell for fictional clock producer')
+    def test_control_page_size_unknown_malformed_and_failed_reads_block_dispatch(self):
+        cases=[('',0),('unknown\n',0),('0\n',0),('04096\n',0),('4096 \n',0),(' 4096\n',0),
+               ('+4096\n',0),('4096.0\n',0),('4096\n4096\n',0),('4096\nextra\n',0),
+               ('4096\n\n',0),('4096\r',0),('\n4096\n',0),('4096\v',0),('4096\x00\n',0),
+               ('٤٠٩٦\n',0),('16384\n',0),('65536\n',0),('4096\n',7),('',127)]
+        for page,status in cases:
+            with self.subTest(page=repr(page),status=status):
+                p=profile();t=ClockProducerWire(p,page=page,status=status)
+                remote=a.AndroidRemote(types.SimpleNamespace(p=p,r=release()),types.SimpleNamespace(event=lambda *x:None),transport=t)
+                with self.assertRaises(m.Refusal):remote.snapshot()
+                dispatch=a.Transport(p,lambda *x:None,execute=True)
+                a.AndroidRemote(remote.inputs,remote.out,transport=dispatch).bind_guard(remote.late_control)
+                with self.assertRaises(m.Refusal):dispatch.shell('FICTIONAL-no-write','payload',mutating=True)
+                self.assertEqual(dispatch.calls,0)
+                self.assertTrue(all(not mutating for _,_,mutating in t.operations))
+
+    @unittest.skipUnless(shutil.which('sh'),'requires host shell for fictional clock producer')
+    def test_4k_control_supports_lf_crlf_without_changing_checkpoint_schema(self):
+        for page,crlf in [('4096\n',False),('4096\n',True),('4096',False)]:
+            with self.subTest(page=repr(page),crlf=crlf):
+                p=profile();t=ClockProducerWire(p,page=page,crlf=crlf)
+                remote=a.AndroidRemote(types.SimpleNamespace(p=p,r=release()),types.SimpleNamespace(event=lambda *x:None),transport=t)
+                control,health,clock=remote.control()
+                self.assertEqual(clock,['FICTIONAL-boot','120.0 1.0','0','Enforcing','4096'])
+                self.assertEqual(control,{'flags':{'userStopped':'false','safetyPaused':'false'},
+                                         'lease_sha256':digest(t.files[m.APP+'/shared_prefs/private_adb_native_lease.xml']),
+                                         'boot':'FICTIONAL-boot'})
+                self.assertEqual(remote.late_control(),control)
+                self.assertEqual(remote.snapshot()['control']['boot'],'FICTIONAL-boot')
+                if crlf:
+                    assert t.clock_output is not None
+                    self.assertIn(b'\r\n',t.clock_output)
+                self.assertTrue(all(not mutating for _,_,mutating in t.operations))
+
+    @unittest.skipUnless(shutil.which('sh'),'requires host shell for fictional clock producer')
+    def test_4k_page_size_does_not_bypass_stop_wifi_selinux_boot_or_freshness(self):
+        for gate in ('stop','safety','phase','lease','pending','wifi','selinux','boot','stale'):
+            with self.subTest(gate=gate):
+                p=profile();t=ClockProducerWire(p,page='4096\n')
+                prefs=m.APP+'/shared_prefs/private_adb_autostart.xml'
+                if gate=='stop':t.files[prefs]=t.files[prefs].replace(b'userStopped" value="false',b'userStopped" value="true')
+                elif gate=='safety':t.files[prefs]=t.files[prefs].replace(b'safetyPaused" value="false',b'safetyPaused" value="true')
+                elif gate=='phase':t.files[prefs]=t.files[prefs].replace(b'healthy',b'paused')
+                elif gate=='lease':t.files[m.APP+'/shared_prefs/private_adb_native_lease.xml']=b'<map><boolean name="ownedFlag" value="true"/></map>'
+                elif gate=='pending':t.pending=True
+                elif gate=='wifi':t.wifi='1'
+                elif gate=='selinux':t.selinux='Permissive'
+                else:
+                    health=json.loads(t.files[m.STATE+'health.json'])
+                    if gate=='boot':health['boot_id']='FICTIONAL-other-boot'
+                    else:health['uptime_ms']=1
+                    t.files[m.STATE+'health.json']=json.dumps(health).encode()
+                remote=a.AndroidRemote(types.SimpleNamespace(p=p,r=release()),types.SimpleNamespace(event=lambda *x:None),transport=t)
+                with self.assertRaises(m.Refusal):remote.late_control()
+
     def test_native_label_uses_authorized_shell_without_changing_other_app_reads(self):
         p=profile();t=LabelPermissionWire(p)
         remote=a.AndroidRemote(types.SimpleNamespace(p=p,r=release()),types.SimpleNamespace(event=lambda *x:None),transport=t)

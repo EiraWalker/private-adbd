@@ -182,9 +182,18 @@ Disable the guardian before intentionally stopping these shell processes.
 The publisher polls `service.sh status`; **healthy** requires exit 0 plus its
 canonical `watch=exact child=exact lock=yes failure=no` snapshot, matching boot,
 UID and context. Heartbeat PIDs are the **manager's actual watch and child**,
-not the publisher PID. Nonhealthy results publish failure/stopped with zero
-PIDs when due. No daemon process records are sourced or changed. This is an
-advisory identity snapshot, not authenticated protocol readiness.
+not the publisher PID. Exit 3 publishes stopped; explicit failure/unknown
+identity (including exits 2/4), other unrecognized results, and malformed exit-0
+snapshots publish failure with zero PIDs when due. There are only two
+unobserved-result exceptions: exit 1 with the exact
+`watch=transition child=transition birth=busy` snapshot, and toybox timeout's
+default deadline exit 124 (which the service itself does not use). Neither calls
+the writer, advances the publication cap, nor fabricates fresh healthy/failure.
+The last genuine heartbeat is left byte-for-byte unchanged; if there was none,
+none is created. Continued contention/timeouts therefore age into the existing
+app's stale/missing-heartbeat policy rather than appearing healthy indefinitely.
+No daemon process records are sourced or changed. This is an advisory identity
+snapshot, not authenticated protocol readiness.
 
 `run-as com.termux /system/bin/sh -c <fixed writer>` drops to the existing app
 UID. JSON is stdin data only. The writer rejects unsafe app paths/destination,
@@ -201,6 +210,11 @@ Run-as/write/clock failures are advisory, cannot stop or mutate the daemon, and
 produce no persistent publisher log. Owned ordinary failed-write temporaries
 are removed. If the publisher dies, no healthy sample is refreshed; the
 unchanged app's boot/freshness policy makes the old sample stale naturally.
+For a stale/missing heartbeat, compare its unchanged boot/uptime with current
+uptime and query the core's `service.sh status` through an already authorized
+shell; a publisher `status` of 0 proves only publisher identity/lock, not a
+successful recent core observation or write. Repeated `birth=busy`/deadline
+results require separate diagnosis, not a fabricated healthy refresh.
 
 ## Host verification and limits
 

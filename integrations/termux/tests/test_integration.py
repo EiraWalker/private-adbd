@@ -134,6 +134,120 @@ publish stopped 0 0
                 self.assertEqual((data['watch_pid'],data['child_pid']),(321,654) if expected=='healthy' else (0,0))
 
 
+class PublisherObservations(PublisherFixture):
+    """Real sample/parser/timeout; manager responses are explicit host fixtures."""
+    def setUp(self):
+        super().setUp()
+        self.status = self.root/'manager.status'
+        self.code = self.root/'manager.code'
+        manager = self.root/'service.sh'
+        self.manager = manager
+        manager.write_text('[ "$1" = status ] || exit 99\ncat "'+str(self.status)+'"\nexit "$(cat "'+str(self.code)+'")"\n')
+        self.prefix += 'SERVICE='+str(manager)+'\n'
+        self.good = f'watch=exact watch_pid=321 watch_start=12 child=exact child_pid=654 child_start=34 lock=yes failure=no boot={BOOT} uid=2000 context=u:r:shell:s0\n'
+        self.busy = 'watch=transition child=transition birth=busy\n'
+
+    def response(self, row, code):
+        self.status.write_text(row)
+        self.code.write_text(str(code))
+
+    def test_birth_busy_does_not_call_publish(self):
+        self.response(self.busy, 1)
+        result = self.run_shell('publish() { printf "publish_called state=%s watch=%s child=%s\\n" "$1" "$2" "$3"; }; sample')
+        self.assertEqual(result.stdout, '', 'a locked status snapshot is not evidence of core failure')
+
+    def test_status_timeout_does_not_call_publish_or_change_last(self):
+        # Validate the real fixture toybox's default timeout convention, not
+        # GNU timeout assumptions or a shim which simply returns a guessed code.
+        result = self.run_shell('toybox timeout 0.05 /bin/sleep 1; printf "timeout_result=%s\\n" "$?"')
+        self.assertEqual(result.stdout, 'timeout_result=124\n')
+        self.manager.write_text('printf "watch=exact incomplete\\n"\nexec /bin/sleep 6\n')
+        result = self.run_shell('''publish() { printf "publish_called state=%s\\n" "$1"; }
+last=1000.25
+sample
+printf 'last=%s\\n' "$last"
+''')
+        self.assertEqual(result.stdout, 'last=1000.25\n')
+
+    def test_only_exact_birth_busy_with_exit_one_is_unobserved(self):
+        rows = [self.busy.replace('birth=busy', 'birth=busy-extra'),
+                'prefix '+self.busy, self.busy+'extra\n',
+                self.busy.replace(' ', '  ', 1), self.busy.replace(' ', '\t', 1),
+                self.busy.replace('\n', '\r\n'), self.busy.rstrip()+' ',
+                'watch=transition child=transition\n', '', self.good]
+        cases = [(row, 1, 'failure') for row in rows]
+        # A copied transition substring cannot override explicit failure,
+        # unknown identity, an exit-0 malformed snapshot, or confirmed stop.
+        cases += [(self.busy, rc, 'stopped' if rc == 3 else 'failure')
+                  for rc in (0, 2, 3, 4, 125, 126, 127, 137, 143, 255)]
+        cases += [(self.good, 0, 'healthy'), (self.good, 3, 'stopped'),
+                  (self.good, 2, 'failure'), (self.good, 4, 'failure'),
+                  ('', 2, 'failure'), ('', 4, 'failure')]
+        for row, code, expected in cases:
+            with self.subTest(row=row, code=code):
+                self.response(row, code)
+                result = self.run_shell('publish() { printf "%s %s %s\\n" "$1" "$2" "$3"; }; sample')
+                pids = '321 654' if expected == 'healthy' else '0 0'
+                self.assertEqual(result.stdout, expected+' '+pids+'\n')
+
+    def test_busy_first_samples_create_no_heartbeat_or_cap(self):
+        self.response(self.busy, 1)
+        result = self.run_shell('sample; sample; printf "last=%s\\n" "${last-unset}"')
+        self.assertEqual(result.stdout, 'last=unset\n')
+        self.assertFalse((self.dest/'health.json').exists())
+        self.assertFalse(self.calls.exists())
+
+    def test_repeated_busy_keeps_real_heartbeat_age_and_publish_slot(self):
+        import shlex
+        self.response(self.good, 0)
+        heartbeat = self.dest/'health.json'
+        original = self.root/'original.json'
+        result = self.run_shell('''sample
+cp '''+shlex.quote(str(heartbeat))+' '+shlex.quote(str(original))+'''
+# Continuous missing observations must grow stale, not renew healthy/failure.
+printf '%s' '''+shlex.quote(self.busy)+' >'+shlex.quote(str(self.status))+'''
+printf 1 >'''+shlex.quote(str(self.code))+'''
+for now in 1015.25 1030.25 10000.25; do
+ printf '%s 0.00\\n' "$now" >'''+shlex.quote(str(self.clock))+'''
+ sample
+done
+cmp '''+shlex.quote(str(heartbeat))+' '+shlex.quote(str(original))+''' || exit 1
+printf 'last=%s\\n' "$last"
+printf '%s' '''+shlex.quote(self.good)+' >'+shlex.quote(str(self.status))+'''
+printf 0 >'''+shlex.quote(str(self.code))+'''
+sample
+''')
+        self.assertEqual(result.stdout, 'last=1000.25\n')
+        self.assertEqual(json.loads(original.read_text())['uptime_ms'], 1000250)
+        self.assertEqual(json.loads(heartbeat.read_text())['uptime_ms'], 10000250)
+        self.assertEqual(json.loads(heartbeat.read_text())['state'], 'healthy')
+        self.assertEqual(self.calls.read_text(), 'xx', 'only the two observed healthy samples may reach run-as')
+
+    def test_real_timeout_keeps_heartbeat_and_does_not_consume_cap(self):
+        import shlex
+        self.response(self.good, 0)
+        original_manager = self.root/'original-service.sh'
+        original_manager.write_text(self.manager.read_text())
+        heartbeat = self.dest/'health.json'
+        original = self.root/'original.json'
+        result = self.run_shell('''sample
+cp '''+shlex.quote(str(heartbeat))+' '+shlex.quote(str(original))+'''
+printf 'exec /bin/sleep 6\\n' >'''+shlex.quote(str(self.manager))+'''
+printf '1015.25 0.00\\n' >'''+shlex.quote(str(self.clock))+'''
+sample
+cmp '''+shlex.quote(str(heartbeat))+' '+shlex.quote(str(original))+''' || exit 1
+printf 'last=%s\\n' "$last"
+cp '''+shlex.quote(str(original_manager))+' '+shlex.quote(str(self.manager))+'''
+# The recovered observation is publishable immediately at this same uptime.
+sample
+''')
+        self.assertEqual(result.stdout, 'last=1000.25\n')
+        self.assertEqual(json.loads(original.read_text())['uptime_ms'], 1000250)
+        self.assertEqual(json.loads(heartbeat.read_text())['uptime_ms'], 1015250)
+        self.assertEqual(json.loads(heartbeat.read_text())['state'], 'healthy')
+        self.assertEqual(self.calls.read_text(), 'xx')
+
+
 class PublisherProcess(PublisherFixture):
 
     def setUp(self):
