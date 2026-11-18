@@ -1,10 +1,28 @@
 # Optional integration with the existing Termux fork guardian
 
-This adds **two scripts**, not an APK, permission bypass, boot hook, or a second
-daemon supervisor. It requires the existing debuggable `com.termux` fork with
+The base integration adds **two scripts**, not an APK, permission bypass, boot hook,
+or a second daemon supervisor. It requires the existing debuggable `com.termux` fork with
 `PrivateAdbService`/`AutostartConfig` (the same APK on every participating device).
 No changes to `lifecycle/service.sh` are needed. The private daemon still uses
 its own keys and fixed `127.0.0.1:27184` endpoint.
+
+## Source ownership
+
+Maintain private-adbd-specific integration updates in this repository. Termux is
+the Android build/integration target, not a separate source of truth for those
+updates. The existing fork guardian remains a prerequisite for the scripts below.
+
+The optional [APK maintenance extension](maintenance-api/README.md) contains its
+Java source, Java tests, CLI helper, protocol documentation and the narrow patch
+for the existing guardian service. Integrate that source into a separate, clean
+Termux checkout when building an APK; do not maintain a second independent copy
+on a Termux feature branch. Source ownership does not change which APK contains
+the compiled classes.
+
+This extension is not required by the independent
+[core bootstrap installer](../../install/CORE-BOOTSTRAP.md). Keeping its source
+here is not an APK release, device installation, or Android maintenance-upgrade
+acceptance claim.
 
 ## Fixed installation contract
 

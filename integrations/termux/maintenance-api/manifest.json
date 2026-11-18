@@ -1,0 +1,206 @@
+{
+  "schemaVersion": 1,
+  "provenance": {
+    "repository": "termux-app (historical compilation target)",
+    "baselineCommit": "b63c00ce197df08df707fe4da2e8d62d3973e5ff",
+    "sourceCommit": "15e90b14ec36fe4b107520ea6b237557b170ea6c"
+  },
+  "overlay": [
+    {
+      "source": "overlay/app/src/main/java/com/termux/app/privateadb/MaintenanceCli.java",
+      "target": "app/src/main/java/com/termux/app/privateadb/MaintenanceCli.java",
+      "sha256": "d1ce37a86dce0abe36c4fa616f556b6e6f90a2d17a72724c208d72c9f0b9fb88"
+    },
+    {
+      "source": "overlay/app/src/main/java/com/termux/app/privateadb/MaintenanceCoordinator.java",
+      "target": "app/src/main/java/com/termux/app/privateadb/MaintenanceCoordinator.java",
+      "sha256": "1338490bfbf94474d2e51b6d95ea5686005233aef62a39551cd167857134c348"
+    },
+    {
+      "source": "overlay/app/src/main/java/com/termux/app/privateadb/MaintenanceLease.java",
+      "target": "app/src/main/java/com/termux/app/privateadb/MaintenanceLease.java",
+      "sha256": "f4254887a8404d81e3acce6164de4c7df9dd1b85802483ec1650f0abdeebc24f"
+    },
+    {
+      "source": "overlay/app/src/main/java/com/termux/app/privateadb/MaintenanceProtocol.java",
+      "target": "app/src/main/java/com/termux/app/privateadb/MaintenanceProtocol.java",
+      "sha256": "a3b1752059fa63454909a4a58d4dbfdb9efd15e54e0db39ff501a8c87e4df448"
+    },
+    {
+      "source": "overlay/app/src/main/java/com/termux/app/privateadb/MaintenanceSocket.java",
+      "target": "app/src/main/java/com/termux/app/privateadb/MaintenanceSocket.java",
+      "sha256": "b2a2a7a71a4dbabf671ba416f5912a7daa70e0ef344d4fe773c1363ca9690aad"
+    },
+    {
+      "source": "overlay/app/src/main/java/com/termux/app/privateadb/MaintenanceTransport.java",
+      "target": "app/src/main/java/com/termux/app/privateadb/MaintenanceTransport.java",
+      "sha256": "a08c3cb9025d9c72c31c2d38bd95c35401cbfad2ca70ca9c0cdaad071fa4eb5e"
+    },
+    {
+      "source": "overlay/app/src/main/java/com/termux/app/privateadb/MaintenanceWire.java",
+      "target": "app/src/main/java/com/termux/app/privateadb/MaintenanceWire.java",
+      "sha256": "0e940b6209900987afb2cc2badad3516a5b3943aeb036e9a2fd0788ad54b19b6"
+    },
+    {
+      "source": "overlay/app/src/test/java/com/termux/app/privateadb/MaintenanceCliTest.java",
+      "target": "app/src/test/java/com/termux/app/privateadb/MaintenanceCliTest.java",
+      "sha256": "5feabab51484e4c4e01014218805bf8190eb0e3e52bd8011641a1189f0289c3e"
+    },
+    {
+      "source": "overlay/app/src/test/java/com/termux/app/privateadb/MaintenanceCoordinatorTest.java",
+      "target": "app/src/test/java/com/termux/app/privateadb/MaintenanceCoordinatorTest.java",
+      "sha256": "bf10d2df19ac0646e94ce080b3a20355e1736baee986f88967b127bf71b8ace9"
+    },
+    {
+      "source": "overlay/app/src/test/java/com/termux/app/privateadb/MaintenanceLeaseTest.java",
+      "target": "app/src/test/java/com/termux/app/privateadb/MaintenanceLeaseTest.java",
+      "sha256": "4749d965dda88ea5d6603d939c0f6cd001654b26921eb827d05498904815dfa5"
+    },
+    {
+      "source": "overlay/app/src/test/java/com/termux/app/privateadb/MaintenanceProtocolTest.java",
+      "target": "app/src/test/java/com/termux/app/privateadb/MaintenanceProtocolTest.java",
+      "sha256": "56231478f2009d5cc59101bfdaa2bb486ab2f807cc8cba6aaaed6a79eb1f9ea7"
+    },
+    {
+      "source": "overlay/app/src/test/java/com/termux/app/privateadb/MaintenanceTransportTest.java",
+      "target": "app/src/test/java/com/termux/app/privateadb/MaintenanceTransportTest.java",
+      "sha256": "0790c333f406c1bcb0c5151f403cbe5964134f63b9f56400d7e4d58e169b7031"
+    },
+    {
+      "source": "overlay/app/src/test/java/com/termux/app/privateadb/MaintenanceWireTest.java",
+      "target": "app/src/test/java/com/termux/app/privateadb/MaintenanceWireTest.java",
+      "sha256": "2175269db236df49b4e27ff43ee1d8e0a5a4c7b5c2ded1e5d47b1294daa46c85"
+    },
+    {
+      "source": "overlay/app/src/test/java/com/termux/app/privateadb/RecoveryGateTest.java",
+      "target": "app/src/test/java/com/termux/app/privateadb/RecoveryGateTest.java",
+      "sha256": "fa5fdaca0d2df1bbd6be7a398161015ab81d6e8088ff024eaed20f3e6d491ed5"
+    },
+    {
+      "source": "overlay/contrib/private-adb/maintenance",
+      "target": "contrib/private-adb/maintenance",
+      "sha256": "729969c03650a3eac74aff30cd28e6c9a8bcb7ca690caf858aad3a2dc1aafad8"
+    },
+    {
+      "source": "overlay/contrib/private-adb/maintenance.md",
+      "target": "contrib/private-adb/maintenance.md",
+      "sha256": "b5521785ec7e46e07b82477a5d0b762fdb7d64e084ce25dc92a01498649bc822"
+    }
+  ],
+  "patch": {
+    "source": "patches/private-adb-service.patch",
+    "target": "app/src/main/java/com/termux/app/privateadb/PrivateAdbService.java",
+    "sha256": "411918cf9397bf3ac38088feefb0b2cc12310824c500934b664fd497d5c4f293"
+  },
+  "fixture": {
+    "source": "fixtures/PrivateAdbService.base.java",
+    "target": "app/src/main/java/com/termux/app/privateadb/PrivateAdbService.java",
+    "sha256": "fc9b777ab94e89149f0bd5ec5c6135fcc6090b55c495f12ce974c95f84d2a761",
+    "gitBlob": "bc18410d0a4d68e1e003e8d48d682c19afb03851",
+    "role": "test-only exact baseline; not authoritative production source"
+  },
+  "targets": [
+    {
+      "path": "app/src/main/java/com/termux/app/privateadb/MaintenanceCli.java",
+      "sha256": "d1ce37a86dce0abe36c4fa616f556b6e6f90a2d17a72724c208d72c9f0b9fb88",
+      "gitBlob": "05c774df776a70313062a63970ccc99c653445a2",
+      "gitMode": "100644"
+    },
+    {
+      "path": "app/src/main/java/com/termux/app/privateadb/MaintenanceCoordinator.java",
+      "sha256": "1338490bfbf94474d2e51b6d95ea5686005233aef62a39551cd167857134c348",
+      "gitBlob": "cee4ff1c2d886e0b6c1160df1b67916c2366caac",
+      "gitMode": "100644"
+    },
+    {
+      "path": "app/src/main/java/com/termux/app/privateadb/MaintenanceLease.java",
+      "sha256": "f4254887a8404d81e3acce6164de4c7df9dd1b85802483ec1650f0abdeebc24f",
+      "gitBlob": "3da2048499c5c90df87631ed5769c57cd227cf4e",
+      "gitMode": "100644"
+    },
+    {
+      "path": "app/src/main/java/com/termux/app/privateadb/MaintenanceProtocol.java",
+      "sha256": "a3b1752059fa63454909a4a58d4dbfdb9efd15e54e0db39ff501a8c87e4df448",
+      "gitBlob": "3789ec5eddc25f34d2c312b321a7d214a4b8688e",
+      "gitMode": "100644"
+    },
+    {
+      "path": "app/src/main/java/com/termux/app/privateadb/MaintenanceSocket.java",
+      "sha256": "b2a2a7a71a4dbabf671ba416f5912a7daa70e0ef344d4fe773c1363ca9690aad",
+      "gitBlob": "70abf3eda0e99aac5a7987f850fc5a658c41eb16",
+      "gitMode": "100644"
+    },
+    {
+      "path": "app/src/main/java/com/termux/app/privateadb/MaintenanceTransport.java",
+      "sha256": "a08c3cb9025d9c72c31c2d38bd95c35401cbfad2ca70ca9c0cdaad071fa4eb5e",
+      "gitBlob": "53c7837026341423da573b107efbe4ac879a6e40",
+      "gitMode": "100644"
+    },
+    {
+      "path": "app/src/main/java/com/termux/app/privateadb/MaintenanceWire.java",
+      "sha256": "0e940b6209900987afb2cc2badad3516a5b3943aeb036e9a2fd0788ad54b19b6",
+      "gitBlob": "7b62ff545dc0b56317dff6f5c431bccc85431723",
+      "gitMode": "100644"
+    },
+    {
+      "path": "app/src/main/java/com/termux/app/privateadb/PrivateAdbService.java",
+      "sha256": "db51dab0245a5d1a2195e3c7a63e07d7964b9b826a70c4d2a7b38b3da7f7f132",
+      "gitBlob": "915e40274e2413017ca2aee7ad3ff7cf990635a2",
+      "gitMode": "100644"
+    },
+    {
+      "path": "app/src/test/java/com/termux/app/privateadb/MaintenanceCliTest.java",
+      "sha256": "5feabab51484e4c4e01014218805bf8190eb0e3e52bd8011641a1189f0289c3e",
+      "gitBlob": "349eb398776c27dd4f671cb9dacabccbd8a98f23",
+      "gitMode": "100644"
+    },
+    {
+      "path": "app/src/test/java/com/termux/app/privateadb/MaintenanceCoordinatorTest.java",
+      "sha256": "bf10d2df19ac0646e94ce080b3a20355e1736baee986f88967b127bf71b8ace9",
+      "gitBlob": "de34348b9fa0570ea8a6667bb52fc54d827f0b45",
+      "gitMode": "100644"
+    },
+    {
+      "path": "app/src/test/java/com/termux/app/privateadb/MaintenanceLeaseTest.java",
+      "sha256": "4749d965dda88ea5d6603d939c0f6cd001654b26921eb827d05498904815dfa5",
+      "gitBlob": "dae0ee6ceec315c63dab821726998e5098736cf9",
+      "gitMode": "100644"
+    },
+    {
+      "path": "app/src/test/java/com/termux/app/privateadb/MaintenanceProtocolTest.java",
+      "sha256": "56231478f2009d5cc59101bfdaa2bb486ab2f807cc8cba6aaaed6a79eb1f9ea7",
+      "gitBlob": "62d35b94a0cc75f6022bba646afa3864dc82c62c",
+      "gitMode": "100644"
+    },
+    {
+      "path": "app/src/test/java/com/termux/app/privateadb/MaintenanceTransportTest.java",
+      "sha256": "0790c333f406c1bcb0c5151f403cbe5964134f63b9f56400d7e4d58e169b7031",
+      "gitBlob": "f622fb0cf6e9cd4bee8f85faa8d0050b7010bd01",
+      "gitMode": "100644"
+    },
+    {
+      "path": "app/src/test/java/com/termux/app/privateadb/MaintenanceWireTest.java",
+      "sha256": "2175269db236df49b4e27ff43ee1d8e0a5a4c7b5c2ded1e5d47b1294daa46c85",
+      "gitBlob": "f61bb24d7785348d041bc65827a20476545e87c4",
+      "gitMode": "100644"
+    },
+    {
+      "path": "app/src/test/java/com/termux/app/privateadb/RecoveryGateTest.java",
+      "sha256": "fa5fdaca0d2df1bbd6be7a398161015ab81d6e8088ff024eaed20f3e6d491ed5",
+      "gitBlob": "f2c4c34f3ba433fb77d40761be340c724be6d361",
+      "gitMode": "100644"
+    },
+    {
+      "path": "contrib/private-adb/maintenance",
+      "sha256": "729969c03650a3eac74aff30cd28e6c9a8bcb7ca690caf858aad3a2dc1aafad8",
+      "gitBlob": "56846f428a80cbc8e631f3ed10ffca27b861dbe2",
+      "gitMode": "100644"
+    },
+    {
+      "path": "contrib/private-adb/maintenance.md",
+      "sha256": "b5521785ec7e46e07b82477a5d0b762fdb7d64e084ce25dc92a01498649bc822",
+      "gitBlob": "a68277a591d57103eb4bc4090af69e0d53433865",
+      "gitMode": "100644"
+    }
+  ]
+}

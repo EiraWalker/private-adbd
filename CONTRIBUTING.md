@@ -45,6 +45,17 @@ python -m unittest discover -s install/tests -v
 python -S install/installer.py --help
 ```
 
+For changes to the optional Termux APK maintenance source package, also run its
+portable source-reconstruction tests (Python standard library and Git only):
+
+```sh
+python -m unittest discover -s integrations/termux/maintenance-api/tests -v
+```
+
+These tests reconstruct the pinned Termux source delta; they do not build an APK
+or replace Java tests and Android upgrade acceptance. Keep the extension's source
+of truth in this repository and use Termux only as its APK integration target.
+
 Keep device profiles, release inputs, maintenance records, SDK tools, APKs, private
 backups, and execution receipts outside the repository. Offline/model tests do not
 establish Android PackageManager, native TLS, lifecycle, or physical-input acceptance.
@@ -59,4 +70,8 @@ Use short, factual descriptions.
 Explain the violated invariant and how the regression test exercises it.
 Follow [docs/SECURITY.md](docs/SECURITY.md) for suspected vulnerabilities.
 
-Contributions must be compatible with the repository's MIT license.
+New private-adbd code must remain compatible with the repository's MIT license.
+Preserve separately identified upstream notices in optional integration source
+packages. In particular, imported Termux material in
+`integrations/termux/maintenance-api/` retains its declared upstream license;
+do not label that material MIT or change the core daemon's MIT license.
