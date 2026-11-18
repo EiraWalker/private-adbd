@@ -346,6 +346,10 @@ class CoreTransport:
             rows = [tuple(line.split()) for line in raw.decode('ascii').splitlines()]
         except UnicodeError:
             raise Refusal('forward list encoding') from None
+        # ADB adds one list terminator, even for an empty list. Remove only that
+        # exact LF/CRLF blank line; all other empty/noisy rows remain invalid.
+        if raw in (b'\n', b'\r\n') or raw.endswith((b'\n\n', b'\r\n\r\n')):
+            rows.pop()
         need(all(len(row) == 3 for row in rows), 'forward list schema')
         return rows
 

@@ -261,6 +261,101 @@ class TransportTextFramingTests(unittest.TestCase):
                 self.assertEqual(self.state['events'][-1]['stdout_bytes'], len(raw))
 
 
+class ForwardListFramingTests(unittest.TestCase):
+    def setUp(self):
+        self.core = load_core()
+        inputs = SimpleNamespace(p={'transport': {
+            'argv': [sys.executable], 'serial': 'FICTIONAL-TRANSPORT'}})
+        self.state = {'events': []}
+        self.remote = self.core.CoreTransport(inputs, mock.Mock(), self.state)
+        self.raw = b''
+        real_run = subprocess.run
+
+        def fixture_run(args, **kwargs):
+            # Native host child emits exact bytes; no ADB/device/network access.
+            return real_run([sys.executable, '-B', '-S', '-c',
+                             'import sys; sys.stdout.buffer.write('+repr(self.raw)+')'], **kwargs)
+
+        self.runner = self.enterContext(mock.patch.object(self.core.subprocess, 'run',
+                                                          side_effect=fixture_run))
+        self.rows = [('FICTIONAL-TRANSPORT', 'tcp:45671', 'tcp:45681'),
+                     ('FICTIONAL-OTHER', 'tcp:45672', 'tcp:45682')]
+        self.lines = [' '.join(row).encode('ascii') for row in self.rows]
+
+    def assert_raw_receipt(self, raw):
+        self.assertEqual(self.raw, raw)
+        self.assertEqual(self.state['events'][-1], {
+            'operation': 'forward-list', 'mutation': False, 'outcome': 'response', 'exit': 0,
+            'stdout_sha256': self.core.sha(raw), 'stderr_sha256': self.core.sha(b''),
+            'stdout_bytes': len(raw), 'stderr_bytes': 0})
+        self.remote.output.write.assert_called_with('core-state.json', self.state)
+        self.runner.assert_called_with(
+            [sys.executable, '-s', 'FICTIONAL-TRANSPORT', 'forward', '--list'],
+            capture_output=True, timeout=150, shell=False)
+
+    def test_empty_list_accepts_only_empty_or_single_lf_crlf(self):
+        for raw in (b'', b'\n', b'\r\n'):
+            with self.subTest(raw=raw):
+                self.raw = raw
+                self.assertEqual(self.remote.forward_rows(), [])
+                self.assert_raw_receipt(raw)
+
+    def test_existing_single_and_multiple_rows_keep_optional_final_newline(self):
+        for count in (1, 2):
+            for newline in (b'\n', b'\r\n'):
+                for ending in (b'', newline):
+                    raw = newline.join(self.lines[:count])+ending
+                    with self.subTest(raw=raw):
+                        self.raw = raw
+                        self.assertEqual(self.remote.forward_rows(), self.rows[:count])
+                        self.assert_raw_receipt(raw)
+
+    def test_single_and_multiple_rows_accept_one_standard_extra_eof_line(self):
+        for count in (1, 2):
+            for newline in (b'\n', b'\r\n'):
+                raw = newline.join(self.lines[:count])+newline+newline
+                with self.subTest(raw=raw):
+                    self.raw = raw
+                    self.assertEqual(self.remote.forward_rows(), self.rows[:count])
+                    self.assert_raw_receipt(raw)
+
+    def test_existing_three_field_whitespace_semantics_are_unchanged(self):
+        self.raw = b'  FICTIONAL-TRANSPORT\ttcp:45671  tcp:45681 \n'
+        self.assertEqual(self.remote.forward_rows(), self.rows[:1])
+        self.assert_raw_receipt(self.raw)
+
+    def test_blank_noise_and_wrong_field_counts_are_rejected(self):
+        invalid = [b'\r', b'\r\r', b' ', b'\t', b'\v', b'\f', b'\x1c',
+                   b' \n', b' \r\n', b'\r\n\r',
+                   b'FICTIONAL-TRANSPORT tcp:45671\n',
+                   self.lines[0]+b' extra\n', b'noise\n']
+        for newline in (b'\n', b'\r\n'):
+            invalid.extend((newline*2, newline*3,
+                            newline+self.lines[0]+newline,
+                            newline+self.lines[0]+newline*2,
+                            self.lines[0]+newline*2+self.lines[1]+newline,
+                            self.lines[0]+newline*2+self.lines[1]+newline*2,
+                            self.lines[0]+newline*3,
+                            self.lines[0]+newline*4,
+                            self.lines[0]+newline+b' '+newline,
+                            self.lines[0]+newline+b'\t'+newline,
+                            self.lines[0]+newline+b'\r'))
+        for raw in invalid:
+            with self.subTest(raw=raw):
+                self.raw = raw
+                with self.assertRaisesRegex(self.core.Refusal, 'forward list schema'):
+                    self.remote.forward_rows()
+                self.assert_raw_receipt(raw)
+
+    def test_nonascii_is_rejected_without_changing_raw_receipt(self):
+        for raw in (b'\xff', self.lines[0]+b'\xff\n', self.lines[0]+b'\n\xff\n'):
+            with self.subTest(raw=raw):
+                self.raw = raw
+                with self.assertRaisesRegex(self.core.Refusal, 'forward list encoding'):
+                    self.remote.forward_rows()
+                self.assert_raw_receipt(raw)
+
+
 # The executable fixture is a separate Python subprocess, not a fake Remote.
 FAKE_ADB = r'''
 import json, pathlib, sys
